@@ -1,0 +1,31 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/
+
+# Env / secrets
+.env
+
+# Data / runtime
+db/
+uploads/
+*.db
+*.duckdb
+*.sqlite
+
+# Logs / exports
+logs/
+*.log
+exports/
