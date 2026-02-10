@@ -1,0 +1,6 @@
+app:
+  name: DataWizflow AI
+  default_language: FR
+
+database:
+  url: ${DATABASE_URL}
