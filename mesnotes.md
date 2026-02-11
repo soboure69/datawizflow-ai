@@ -762,3 +762,449 @@ Réponds avec :
 Ensuite on clôture Phase 1 et on planifie Phase 2 (NL2SQL / Ollama).
 
 ---
+
+# Cours Phase 1 — Apprentissages clés
+Tu as maintenant une **base fonctionnelle** (config + exécution SQL + UI + tests + DB démo). On va transformer ça en “cours” structuré sur :
+
+- **SQLAlchemy**
+- **Gestion de config**
+- **Streamlit basics**
+
+Je reste volontairement “pratique” : concepts + ce que tu as fait + pièges + mini-exos.
+
+---
+
+## 1) SQLAlchemy (les bases utiles pour ton projet)
+
+### 1.1. À quoi sert SQLAlchemy ici ?
+SQLAlchemy est une **couche d’abstraction** au-dessus des DB qui te permet :
+- de te connecter à plusieurs moteurs (SQLite, Postgres, MySQL…)
+- d’exécuter du SQL de manière plus propre (paramètres, transactions)
+- plus tard : d’utiliser l’ORM si tu veux (pas obligatoire)
+
+Dans Phase 1, tu utilises surtout :
+- `create_engine(database_url)`
+- [conn.execute(text(sql), params)](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/sql_executor.py:27:4-34:51)
+
+### 1.2. Le rôle de `Engine` et `Connection`
+Dans ton [SQLExecutor](cci:2://file:///c:/Users/bello/Documents/datawizflow-ai/services/sql_executor.py:15:0-34:51) :
+- **`Engine`** = “usine” à connexions + gestion pool (même si SQLite est simple)
+- **`Connection`** = une connexion active, utilisée dans un `with` (bonne pratique)
+
+Pourquoi `with self._engine.connect() as conn:` ?
+- garantit la fermeture propre même en cas d’erreur
+- évite les connexions “pendantes”
+
+### 1.3. `text()` et les paramètres (anti-SQL injection)
+Tu fais :
+```python
+conn.execute(text(sql), params or {})
+```
+
+**Pourquoi `text()` ?**
+- SQLAlchemy comprend que c’est une requête SQL “texte”
+- tu pourras faire des requêtes paramétrées, ex :
+```sql
+SELECT * FROM sales WHERE region_id = :region_id
+```
+et côté Python :
+```python
+executor.execute("SELECT ... WHERE region_id=:region_id", {"region_id": 2})
+```
+
+Ça évite :
+- concaténer des strings SQL (dangereux)
+- les erreurs de quoting
+
+### 1.4. `sqlite+pysqlite:///:memory:` dans les tests
+**Pourquoi :memory:?**
+- DB éphémère créée en RAM
+- tests rapides, isolés, reproductibles
+- aucun fichier généré dans [db/](cci:9://file:///c:/Users/bello/Documents/datawizflow-ai/db:0:0-0:0)
+
+### 1.5. Mini-exos SQLAlchemy (5 min)
+Dans ta page “Connexion & Sources”, essaye :
+- **Exo A** : une requête paramétrée (on ajoutera le support UI plus tard)
+- **Exo B** : créer une table “temp” puis vérifier qu’elle existe
+  - et comprendre que SQLite persiste dans `db/demo.db`
+
+---
+
+## 2) Gestion de config (YAML + .env + substitution)
+
+### 2.1. Pourquoi on a 2 niveaux de config ?
+Tu as :
+- [config/config.yaml](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/config/config.yaml:0:0-0:0) : **versionné**, lisible, structurel (“contrat”)
+- [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0) : **local**, non versionné, contient les valeurs (souvent sensibles)
+
+**But :**
+- tu peux partager le repo sans exposer tes secrets
+- tu changes d’environnement sans changer le code
+
+### 2.2. `${DATABASE_URL}` : le principe
+Dans YAML :
+```yaml
+database:
+  url: ${DATABASE_URL}
+```
+
+Puis ton [ConfigManager](cci:2://file:///c:/Users/bello/Documents/datawizflow-ai/services/config_manager.py:45:0-55:34) remplace `${DATABASE_URL}` par la valeur de l’environnement.
+
+**Pourquoi c’est puissant ?**
+- plus tard tu auras :
+  - `${OLLAMA_URL}`
+  - `${OPENAI_API_KEY}` (si un jour)
+  - `${POSTGRES_PASSWORD}`, etc.
+- tu gardes la structure stable, seules les valeurs changent
+
+### 2.3. `python-dotenv`
+Dans ta page Streamlit, tu fais :
+```python
+load_dotenv()
+```
+
+**Pourquoi ?**
+- [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0) n’est pas automatiquement lu par Python
+- `load_dotenv()` injecte ces variables dans `os.environ`
+- ton [ConfigManager](cci:2://file:///c:/Users/bello/Documents/datawizflow-ai/services/config_manager.py:45:0-55:34) peut ensuite lire `DATABASE_URL`
+
+### 2.4. Bonnes pratiques (pour la suite)
+- [.env-template](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/config/.env-template:0:0-0:0) = documentation des variables attendues
+- [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0) jamais commité
+- [ConfigManager](cci:2://file:///c:/Users/bello/Documents/datawizflow-ai/services/config_manager.py:45:0-55:34) = point unique d’accès à la config (évite le chaos)
+
+### 2.5. Mini-exos config (3 min)
+- Change `DATABASE_URL` dans [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0) vers :
+  - `sqlite:///db/demo2.db`
+- Relance le script de génération DB
+- Vérifie que l’UI pointe bien sur `demo2.db`
+
+Tu verras concrètement la séparation “code vs config”.
+
+---
+
+## 3) Streamlit basics (ce que tu dois maîtriser)
+
+### 3.1. Le modèle mental Streamlit
+Streamlit fonctionne en mode :
+- ton script est **relancé** à chaque interaction (button, input…)
+- l’UI est décrite de haut en bas
+
+Donc tu dois penser :
+- “state” (état) = `st.session_state`
+- et code idempotent (ne pas recréer/dupliquer sans contrôle)
+
+### 3.2. Multipages
+En lançant :
+- `streamlit run app.py`
+
+Streamlit détecte :
+- `pages/*.py` comme pages automatiques
+
+C’est pour ça que mettre [app.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/app.py:0:0-0:0) à la racine est pratique au début.
+
+### 3.3. Inputs et callbacks
+Tu utilises :
+- `st.text_area`
+- `st.button`
+- `st.dataframe`
+
+**Important :**
+- `st.button()` retourne `True` seulement au clic
+- la logique “au clic” doit être conditionnée et robuste aux reruns
+
+### 3.4. Gestion simple d’erreurs UI
+Tu as déjà :
+- `st.success(...)`
+- `st.error(...)`
+
+C’est bien : l’utilisateur voit immédiatement ce qui marche / échoue.
+
+### 3.5. Mini-exos Streamlit (5 min)
+Dans “Connexion & Sources” :
+- Ajoute (toi) un `st.selectbox` qui choisit une requête “pré-définie” (ex: Top catégorie, Revenu par région) puis remplit le `text_area`.
+- Tu vas apprendre :
+  - rerun
+  - conservation de valeur
+  - (plus tard) session_state
+
+---
+
+# Conclusion Phase 1 (ce que tu as réellement acquis)
+- **SQLAlchemy** : connexion, exécution SQL, test DB, isolation via `:memory:`
+- **Config** : séparation config/secret, [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0), substitution, reproductibilité
+- **Streamlit** : multipages, interactions, reruns, UI “safe”
+
+---
+
+## Pour valider que le cours est acquis (question rapide)
+Réponds en 3 lignes max :
+1) Pourquoi on ne met pas `DATABASE_URL` en dur dans le code ?
+2) À quoi sert `text()` dans SQLAlchemy ?
+3) Pourquoi `:memory:` est utile pour les tests ?
+
+Après ça, on passe à **Phase 2 : NL2SQL** (installation Ollama + premier `OllamaService.generate_sql()`).
+
+---
+
+## Phase 2 — Tâche 1 : Intégration Ollama (Windows)
+
+Objectif : avoir **Ollama qui tourne**, le modèle **mistral** téléchargé, et un **appel Python** qui répond. C’est le socle de tout NL2SQL.
+
+---
+
+# 1) Installer Ollama (moteur LLM local)
+
+## Pourquoi ?
+- Ollama = “serveur local” qui expose une API HTTP (`/api/chat`, `/api/generate`).
+- Ton app Python/Streamlit n’aura qu’à appeler cette API.
+
+## Action (toi)
+Choisis une méthode :
+
+### Option A — Installer via le site (le plus simple)
+- Télécharge et installe : https://ollama.com/download/windows
+
+### Option B — `winget` (si tu l’utilises)
+```powershell
+winget install Ollama.Ollama
+```
+
+## Vérification
+Après installation, dans PowerShell :
+```powershell
+ollama --version
+```
+
+---
+
+# 2) Démarrer le service Ollama
+
+## Pourquoi ?
+- Le serveur doit tourner pour que Python puisse l’appeler.
+
+## Action (toi)
+En général sur Windows, Ollama démarre en service automatiquement.
+Vérifie que l’API répond :
+
+```powershell
+curl http://localhost:11434/api/tags
+```
+
+Attendu : un JSON (même si la liste est vide au début).
+
+---
+
+# 3) Télécharger un modèle (mistral)
+
+## Pourquoi ?
+- Sans modèle “pull”, Ollama ne peut rien générer.
+
+## Action (toi)
+```powershell
+ollama pull mistral
+```
+
+Puis vérifie :
+```powershell
+ollama list
+```
+
+---
+
+# 4) Ajouter le client Python Ollama au projet
+
+Tu as choisi en Phase 1 un [requirements.txt](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/requirements.txt:0:0-0:0) minimal, donc **ollama n’est probablement pas installé côté Python**.
+
+## Pourquoi ?
+- On veut un petit client Python simple qui appelle l’API proprement.
+
+## Action (toi)
+1) Ajoute dans [requirements.txt](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/requirements.txt:0:0-0:0) :
+```txt
+ollama==0.1.0
+```
+
+2) Installe :
+```powershell
+pip install -r requirements.txt
+```
+
+---
+
+# 5) Test Python (appel simple)
+
+## Pourquoi ?
+- Valider “de bout en bout” : Python -> HTTP -> Ollama -> modèle -> réponse.
+
+## Action (toi) : crée un fichier `scripts/test_ollama.py`
+```python
+from ollama import Client
+
+client = Client(base_url="http://localhost:11434")
+
+resp = client.chat(
+    model="mistral",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "Réponds uniquement: OK OLLAMA"},
+    ],
+)
+
+print(resp["message"]["content"])
+```
+
+Puis exécute :
+```powershell
+python scripts/test_ollama.py
+```
+
+Attendu : `OK OLLAMA` (ou quelque chose de très proche).
+
+---
+
+# 6) (Recommandé) Mettre Ollama dans [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0)
+
+## Pourquoi ?
+- Ça évite de “hardcoder” `localhost` et le nom du modèle.
+- Plus tard tu pourras passer en Docker (`http://ollama:11434`) sans toucher au code.
+
+## Action (toi) : dans [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0) ajoute
+```env
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=mistral
+```
+
+---
+
+## Dis-moi où ça bloque (ou si tout est OK)
+Réponds avec :
+- la sortie de `ollama list`
+- et la sortie de `python scripts/test_ollama.py`
+
+Ensuite on passe à **Phase 2 — Tâche suivante** : implémenter `OllamaService.generate_sql()` + première page NL2SQL sur ta DB démo.
+
+---
+Je vais ajouter un service dédié `OllamaService` dans [services/](cci:9://file:///c:/Users/bello/Documents/datawizflow-ai/services:0:0-0:0) avec une méthode `generate_sql()` qui :
+- lit `OLLAMA_URL` / `OLLAMA_MODEL` (ou paramètres)
+- construit un prompt NL2SQL (avec le schéma SQLite de ta DB démo + règles read-only)
+- appelle Ollama via le client Python `ollama`
+- nettoie la réponse (retire les ``` et renvoie uniquement le SQL)
+
+Je commence par vérifier ce qui existe déjà dans [services/](cci:9://file:///c:/Users/bello/Documents/datawizflow-ai/services:0:0-0:0) pour ne rien écraser.
+
+
+
+
+
+
+## [OllamaService.generate_sql()](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:111:4-133:26) implémenté
+
+J’ai créé un nouveau fichier **[services/ollama_service.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:0:0-0:0)** (car il n’existait pas) avec :
+
+- **[OllamaService.generate_sql(question, language="FR", schema=None)](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:111:4-133:26)**
+  - construit un prompt NL2SQL **read-only**
+  - injecte le **schéma** de ta DB SQLite (auto si tu fournis [database_url](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/config_manager.py:36:4-42:18))
+  - appelle Ollama via `ollama.Client(base_url=...)`
+  - nettoie la réponse (retire les fences ```sql``` si besoin) et renvoie **uniquement le SQL**
+
+### Pourquoi un service séparé ?
+- **Séparation des responsabilités** :
+  - [SQLExecutor](cci:2://file:///c:/Users/bello/Documents/datawizflow-ai/services/sql_executor.py:15:0-34:51) = exécution SQL
+  - [OllamaService](cci:2://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:64:0-133:26) = génération SQL via LLM
+- Ça rend testable et réutilisable (page NL2SQL, DataViz plus tard, etc.)
+
+---
+
+# 1) Pré-requis (à vérifier côté toi)
+Dans [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0), tu devrais avoir (ou ajouter) :
+```env
+OLLAMA_URL=http://localhost:11434
+OLLAMA_MODEL=mistral
+DATABASE_URL=sqlite:///db/demo.db
+```
+
+---
+
+# 2) Test rapide (avant UI NL2SQL)
+
+## Action (toi) : créer `scripts/test_generate_sql.py`
+```python
+from dotenv import load_dotenv
+
+from services.config_manager import ConfigManager
+from services.ollama_service import OllamaService
+
+load_dotenv()
+
+cfg = ConfigManager().load()
+
+svc = OllamaService(database_url=cfg.database_url)
+
+sql = svc.generate_sql(
+    question="Donne le chiffre d'affaires total par catégorie",
+    language="FR",
+)
+
+print(sql)
+```
+
+Puis exécute :
+```powershell
+python scripts/test_generate_sql.py
+```
+
+Pourquoi ``python scripts/test_generate_sql.py`` ne trouve pas services ?
+Quand tu exécutes un fichier dans un sous-dossier comme ça :
+
+```powershell
+python scripts/test_generate_sql.py
+```
+
+Python met `scripts/` comme “répertoire de départ” pour les imports (`sys.path[0] = .../scripts`). Du coup, il ne voit pas `services/` qui est à la racine.
+
+Dans `pytest`, ça marchait parce qu’on avait ajouté `tests/conftest.py` qui injecte la racine du projet dans le `sys.path`. Ici, on n’a pas cet aide.
+
+Solution recommandée (pédagogique) : exécuter en module `-m`
+Lance plutôt :
+
+```powershell
+python -m scripts.test_generate_sql
+```
+
+Pourquoi ça marche ?
+En mode module (-m), Python considère la racine du projet comme base d’import, donc from services... devient importable.
+
+> Optionnel : tu peux aussi créer un fichier vide `scripts/__init__.py` (pas obligatoire dans les versions récentes, mais propre).
+
+
+
+### Attendu
+Un SQL du type :
+```sql
+SELECT p.category, SUM(s.revenue) ...
+FROM sales s JOIN products p ...
+GROUP BY p.category;
+```
+
+---
+
+# 3) Petit point d’attention (important)
+Le prompt interdit `PRAGMA`, `CREATE`, etc. C’est volontaire pour éviter des requêtes dangereuses.
+
+Mais :
+- SQLite supporte plein de choses
+- on renforcera ça en **Phase 2 / Prompt engineering** + validation côté exécution (read-only) dans la prochaine tâche.
+
+---
+
+# Prochaine étape (après test OK)
+On passe à **Phase 2 — Tâche 2/3** :
+- construire le **template de prompt** propre (FR/EN) avec exemples
+- puis créer la **page Streamlit NL2SQL** (zone NL, bouton générer, SQL éditable, exécuter, résultats)
+
+Dis-moi :
+- la sortie de `python scripts/test_generate_sql.py`
+- et si Ollama renvoie bien du SQL propre (sans explication).
+
+---

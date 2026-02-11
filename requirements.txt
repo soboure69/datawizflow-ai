@@ -7,3 +7,5 @@ sqlalchemy==2.0.25
 pandas==2.2.3
 
 pytest==7.4.0
+
+ollama==0.1.0
