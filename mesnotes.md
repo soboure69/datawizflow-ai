@@ -1844,3 +1844,138 @@ Réponds `A`, `B` ou `A+B`, et je te donne les étapes exactes (toujours exécut
 - Prochaine action recommandée immédiate : **retirer les `.` finaux** pour stabiliser.
 
 ---
+
+
+## OK — on fait `A+B` (Export Excel + Requêtes exemples) + on corrige les `.` finaux
+
+Je te propose l’ordre **le plus safe** :
+1) Corriger les `.` finaux (sinon risque de crash au reload)
+2) Ajouter `openpyxl` (Excel)
+3) Ajouter “Requêtes exemples” (selectbox) + exports CSV/Excel
+
+---
+
+# 0) Correction immédiate : enlever les `.` finaux
+
+## Pourquoi ?
+Un `.` à la fin d’une ligne Python rend le fichier **invalide** → `SyntaxError` au prochain reload Streamlit.
+
+## Action (toi)
+
+### A) [utils/sql_safety.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/utils/sql_safety.py:0:0-0:0)
+La dernière ligne doit être exactement :
+```python
+return f"{s}\nLIMIT {int(limit)}"
+```
+(sans `.` à la fin)
+
+### B) [pages/2_NL2SQL.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/pages/2_NL2SQL.py:0:0-0:0)
+La dernière ligne `st.download_button(...)` doit finir par `)` uniquement (pas `).`)
+
+---
+
+# 1) Export Excel (A) — ajouter la dépendance
+
+## Pourquoi ?
+Pandas écrit en Excel via un “engine”. Pour `.xlsx`, le plus courant = `openpyxl`.
+
+## Action (toi) : [requirements.txt](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/requirements.txt:0:0-0:0)
+Ajoute :
+```txt
+openpyxl==3.1.5
+```
+
+Puis installe :
+```powershell
+pip install -r requirements.txt
+```
+
+---
+
+# 2) Requêtes exemples (B) + Exports CSV/Excel dans la page NL2SQL
+
+## Pourquoi ?
+- Les exemples te servent de **bootstrap** pour apprendre et tester vite.
+- L’export Excel est très demandé en usage “BI”.
+
+## Action (toi) : modifier [pages/2_NL2SQL.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/pages/2_NL2SQL.py:0:0-0:0)
+
+### A) Ajoute un bloc “Exemples” *juste avant* le `st.text_area` de la question
+Colle ce bloc après `limit = st.selectbox(...)` (dans la sidebar par exemple) :
+
+```python
+examples = {
+    "—": "",
+    "Top 5 produits par revenu": """SELECT p.product_name, ROUND(SUM(s.revenue), 2) AS revenue_total
+FROM sales s
+JOIN products p ON p.product_id = s.product_id
+GROUP BY p.product_name
+ORDER BY revenue_total DESC
+LIMIT 5""",
+    "Revenu total par catégorie": """SELECT p.category, ROUND(SUM(s.revenue), 2) AS revenue_total
+FROM sales s
+JOIN products p ON p.product_id = s.product_id
+GROUP BY p.category
+ORDER BY revenue_total DESC""",
+    "Revenu total par région": """SELECT r.region_name, ROUND(SUM(s.revenue), 2) AS revenue_total
+FROM sales s
+JOIN regions r ON r.region_id = s.region_id
+GROUP BY r.region_name
+ORDER BY revenue_total DESC""",
+    "Revenu total par mois (2024)": """SELECT d.year, d.month, ROUND(SUM(s.revenue), 2) AS revenue_total
+FROM sales s
+JOIN dates d ON d.date = s.sale_date
+GROUP BY d.year, d.month
+ORDER BY d.year, d.month""",
+}
+
+with st.sidebar:
+    st.subheader("Exemples")
+    example_name = st.selectbox("Charger un exemple", list(examples.keys()), index=0)
+    if st.button("Charger l'exemple", disabled=(example_name == "—")):
+        st.session_state["nl2sql_sql"] = examples[example_name]
+```
+
+### B) Export Excel (ajoute après l’export CSV)
+Dans ton bloc `if df is not None:` après le CSV, ajoute :
+
+```python
+excel_buffer = io.BytesIO()
+with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+    df.to_excel(writer, index=False, sheet_name="results")
+
+st.download_button(
+    "Télécharger Excel",
+    data=excel_buffer.getvalue(),
+    file_name="nl2sql_result.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+```
+
+> Note : tu as déjà `import io` en haut, donc c’est parfait.
+
+---
+
+# 3) Test (toi)
+1) Relance Streamlit :
+```powershell
+streamlit run app.py
+```
+
+2) Va dans **NL2SQL**
+- Clique “Charger l’exemple” (ex: Revenu total par région)
+- Clique “Valider + Exécuter”
+- Télécharge **CSV** puis **Excel** et ouvre l’Excel pour vérifier.
+
+---
+
+## Dis-moi le résultat
+- Est-ce que le bouton Excel apparaît bien ?
+- Est-ce que le fichier `.xlsx` s’ouvre correctement ?
+- Et confirme que le “Charger l’exemple” remplit bien la zone SQL.
+
+Ensuite on pourra attaquer la suite du plan Phase 2 :
+- **Historique & sauvegarde** (SQLite interne)
+- **Tests** `test_generate_sql_simple()` + `test_execute_query()` + test d’intégration.
+
+---
