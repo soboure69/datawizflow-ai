@@ -6,6 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+from utils.nl2sql_prompts import build_nl2sql_prompt
 
 from ollama import Client
 
@@ -80,34 +81,7 @@ class OllamaService:
         return OllamaSettings(base_url=self._base_url, model=self._model)
 
     def build_prompt(self, *, question: str, schema: str, language: str) -> str:
-        lang = (language or "FR").upper()
-        if lang not in {"FR", "EN"}:
-            lang = "EN"
-
-        if lang == "FR":
-            rules = (
-                "Tu es un expert SQL (SQLite).\n"
-                "Génère une requête SQL STRICTEMENT en lecture seule.\n"
-                "Interdits: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA.\n"
-                "Retourne UNIQUEMENT le SQL, sans explication, sans markdown." 
-            )
-            instruction = "Question: "
-        else:
-            rules = (
-                "You are an expert SQL engineer (SQLite).\n"
-                "Generate a STRICTLY read-only SQL query.\n"
-                "Forbidden: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA.\n"
-                "Return ONLY the SQL, no explanation, no markdown."
-            )
-            instruction = "Question: "
-
-        return (
-            f"{rules}\n\n"
-            "Database schema:\n"
-            f"{schema}\n\n"
-            f"{instruction}{question}\n"
-            "SQL:"
-        )
+        return build_nl2sql_prompt(question=question, schema=schema, language=language)
 
     def generate_sql(self, *, question: str, language: str = "FR", schema: Optional[str] = None) -> str:
         if not question or not question.strip():

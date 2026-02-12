@@ -1208,3 +1208,325 @@ Dis-moi :
 - et si Ollama renvoie bien du SQL propre (sans explication).
 
 ---
+
+## Phase 2 — Tâche 2 : Prompt engineering (NL2SQL)
+
+Objectif : obtenir un prompt **stable** qui force Ollama à produire du SQL :
+- **correct pour SQLite**
+- **strictement read-only**
+- **sans blabla, sans markdown**
+- **robuste** (même si le modèle “veut expliquer”)
+
+Je te propose une approche en 3 couches : **règles**, **schéma**, **format de sortie** + **exemples**.
+
+---
+
+# 1) Spécification (contrat) du SQL attendu
+
+## Pourquoi ?
+Si tu ne définis pas un “contrat de sortie”, le LLM va souvent :
+- ajouter des explications
+- renvoyer du markdown
+- inventer des colonnes/tables
+- proposer du DDL (`CREATE`, `DROP`, etc.)
+
+## Contrat de sortie (à imposer)
+- **Retourner uniquement** une requête SQL.
+- **Une seule requête** (un seul statement).
+- **Read-only** : autoriser uniquement `SELECT` (+ `WITH` pour CTE si tu veux), `JOIN`, `GROUP BY`, `ORDER BY`, `LIMIT`.
+- **Interdire** : `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `PRAGMA`, `ATTACH`, `DETACH`, `VACUUM`, `REINDEX`, `TRUNCATE`.
+- Ajouter un **`LIMIT 200`** si la question ne demande pas explicitement “tout”.
+- Si la question est ambiguë : choisir l’interprétation la plus raisonnable **sans poser de question** (ou retourner un `SELECT` simple).
+
+---
+
+# 2) Template de prompt FR/EN (copier/coller)
+
+Tu peux soit intégrer ça dans [OllamaService.build_prompt](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:81:4-109:9), soit créer un module dédié (ex: `utils/prompts.py`). Comme tu veux apprendre, je te donne le template “pur”.
+
+## FR — Prompt template
+```text
+RÔLE:
+Tu es un expert SQL pour SQLite.
+
+OBJECTIF:
+Générer UNE SEULE requête SQL pour répondre à la question de l’utilisateur.
+
+CONTRAINTES STRICTES:
+- La requête DOIT être read-only.
+- Requête autorisée: uniquement SELECT (CTE WITH autorisée).
+- Interdit: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, ATTACH, DETACH, VACUUM, REINDEX, TRUNCATE.
+- N'invente jamais des tables ou des colonnes.
+- Utilise uniquement les tables/colonnes présentes dans le schéma.
+- Retourne uniquement le SQL, sans explication, sans commentaires, sans markdown, sans triple backticks.
+- Si la question ne demande pas explicitement "tout", ajoute LIMIT 200 si aucun LIMIT n'est présent.
+
+SCHÉMA DE LA BASE:
+{schema}
+
+EXEMPLES:
+Q: Chiffre d'affaires total par catégorie
+SQL:
+SELECT p.category, SUM(s.revenue) AS revenue_total
+FROM sales s
+JOIN products p ON p.product_id = s.product_id
+GROUP BY p.category
+ORDER BY revenue_total DESC
+LIMIT 200;
+
+Q: Revenu total par région
+SQL:
+SELECT r.region_name, SUM(s.revenue) AS revenue_total
+FROM sales s
+JOIN regions r ON r.region_id = s.region_id
+GROUP BY r.region_name
+ORDER BY revenue_total DESC
+LIMIT 200;
+
+QUESTION UTILISATEUR:
+{question}
+
+SQL:
+```
+
+## EN — Prompt template
+```text
+ROLE:
+You are an expert SQL engineer for SQLite.
+
+GOAL:
+Generate ONE SQL query that answers the user's question.
+
+STRICT CONSTRAINTS:
+- The query MUST be read-only.
+- Allowed: SELECT only (WITH CTE allowed).
+- Forbidden: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, ATTACH, DETACH, VACUUM, REINDEX, TRUNCATE.
+- Never invent tables or columns.
+- Use only the tables/columns from the schema.
+- Output ONLY the SQL. No explanation, no comments, no markdown, no triple backticks.
+- If the question does not explicitly ask for "all rows", add LIMIT 200 if no LIMIT is present.
+
+DATABASE SCHEMA:
+{schema}
+
+EXAMPLES:
+Q: Total revenue by category
+SQL:
+SELECT p.category, SUM(s.revenue) AS revenue_total
+FROM sales s
+JOIN products p ON p.product_id = s.product_id
+GROUP BY p.category
+ORDER BY revenue_total DESC
+LIMIT 200;
+
+Q: Total revenue by region
+SQL:
+SELECT r.region_name, SUM(s.revenue) AS revenue_total
+FROM sales s
+JOIN regions r ON r.region_id = s.region_id
+GROUP BY r.region_name
+ORDER BY revenue_total DESC
+LIMIT 200;
+
+USER QUESTION:
+{question}
+
+SQL:
+```
+
+---
+
+# 3) Ajout “anti-dérapage” côté code (à faire ensuite)
+Même avec un bon prompt, il faut **valider** la sortie du modèle avant exécution.
+
+## Règles de validation à implémenter (prochaine sous-étape)
+- SQL doit commencer par `SELECT` ou `WITH`
+- Refuser si contient un mot interdit (regex simple sur mots-clés)
+- Refuser si contient `;` et qu’il y a plus d’un statement (tu peux faire simple au début : refuser tout `;`)
+
+> On fera ça dans la prochaine tâche (Interface NL2SQL), juste avant l’exécution.
+
+---
+
+# 4) Jeu de tests (questions à essayer)
+Avec ton schéma `sales/products/regions/dates`, teste ces questions :
+
+- **FR1**: “Top 5 produits par revenu total”
+- **FR2**: “Revenu total par mois (2024)”
+- **FR3**: “Revenu moyen par vente par catégorie”
+- **FR4**: “Quantité totale vendue par région”
+- **FR5**: “Les 10 jours avec le plus gros revenu”
+
+Attendu (approximatif) : joins corrects + `GROUP BY` + `ORDER BY` + `LIMIT`.
+
+---
+
+# Question pour toi (pour décider du prochain pas)
+Tu veux faire le prompt engineering :
+- **Option A**: tu modifies directement [services/ollama_service.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:0:0-0:0) (la méthode [build_prompt](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:81:4-109:9)) avec ce template
+- **Option B**: tu crées un module dédié `utils/nl2sql_prompts.py` (plus propre, plus testable), et [OllamaService](cci:2://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:64:0-133:26) l’utilise
+
+Dis-moi `A` ou `B`, et je te donne exactement quoi modifier/créer (toujours en te laissant exécuter les actions toi-même).
+
+---
+## Option B — Module dédié `utils/nl2sql_prompts.py` (prompt engineering propre et testable)
+
+### Pourquoi Option B est meilleure ?
+- **Séparation claire** :
+  - `utils/nl2sql_prompts.py` = *prompt engineering* (texte + règles + exemples)
+  - [services/ollama_service.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:0:0-0:0) = *appel Ollama + orchestration*
+- **Testabilité** : tu peux tester le prompt sans dépendre d’Ollama.
+- **Évolutivité** : quand tu passeras à d’autres DB (Postgres), tu changes surtout le prompt et la description de schéma.
+
+---
+
+# 1) Action (toi) : créer `utils/nl2sql_prompts.py`
+
+Crée le fichier `utils/nl2sql_prompts.py` et colle ceci :
+
+```python
+from __future__ import annotations
+
+
+def build_nl2sql_prompt(*, question: str, schema: str, language: str = "FR") -> str:
+    lang = (language or "FR").upper()
+    if lang not in {"FR", "EN"}:
+        lang = "EN"
+
+    if lang == "FR":
+        return f"""RÔLE:
+Tu es un expert SQL pour SQLite.
+
+OBJECTIF:
+Générer UNE SEULE requête SQL pour répondre à la question de l’utilisateur.
+
+CONTRAINTES STRICTES:
+- La requête DOIT être read-only.
+- Requête autorisée: uniquement SELECT (CTE WITH autorisée).
+- Interdit: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, ATTACH, DETACH, VACUUM, REINDEX, TRUNCATE.
+- N'invente jamais des tables ou des colonnes.
+- Utilise uniquement les tables/colonnes présentes dans le schéma.
+- Retourne uniquement le SQL, sans explication, sans commentaires, sans markdown, sans triple backticks.
+- Si la question ne demande pas explicitement "tout", ajoute LIMIT 200 si aucun LIMIT n'est présent.
+
+SCHÉMA DE LA BASE:
+{schema}
+
+EXEMPLES:
+Q: Chiffre d'affaires total par catégorie
+SQL:
+SELECT p.category, SUM(s.revenue) AS revenue_total
+FROM sales s
+JOIN products p ON p.product_id = s.product_id
+GROUP BY p.category
+ORDER BY revenue_total DESC
+LIMIT 200;
+
+Q: Revenu total par région
+SQL:
+SELECT r.region_name, SUM(s.revenue) AS revenue_total
+FROM sales s
+JOIN regions r ON r.region_id = s.region_id
+GROUP BY r.region_name
+ORDER BY revenue_total DESC
+LIMIT 200;
+
+QUESTION UTILISATEUR:
+{question}
+
+SQL:"""
+    else:
+        return f"""ROLE:
+You are an expert SQL engineer for SQLite.
+
+GOAL:
+Generate ONE SQL query that answers the user's question.
+
+STRICT CONSTRAINTS:
+- The query MUST be read-only.
+- Allowed: SELECT only (WITH CTE allowed).
+- Forbidden: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, ATTACH, DETACH, VACUUM, REINDEX, TRUNCATE.
+- Never invent tables or columns.
+- Use only the tables/columns from the schema.
+- Output ONLY the SQL. No explanation, no comments, no markdown, no triple backticks.
+- If the question does not explicitly ask for "all rows", add LIMIT 200 if no LIMIT is present.
+
+DATABASE SCHEMA:
+{schema}
+
+EXAMPLES:
+Q: Total revenue by category
+SQL:
+SELECT p.category, SUM(s.revenue) AS revenue_total
+FROM sales s
+JOIN products p ON p.product_id = s.product_id
+GROUP BY p.category
+ORDER BY revenue_total DESC
+LIMIT 200;
+
+Q: Total revenue by region
+SQL:
+SELECT r.region_name, SUM(s.revenue) AS revenue_total
+FROM sales s
+JOIN regions r ON r.region_id = s.region_id
+GROUP BY r.region_name
+ORDER BY revenue_total DESC
+LIMIT 200;
+
+USER QUESTION:
+{question}
+
+SQL:"""
+```
+
+---
+
+# 2) Action (toi) : modifier [services/ollama_service.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:0:0-0:0) pour utiliser ce module
+
+Dans [services/ollama_service.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:0:0-0:0) :
+
+## A) Ajoute l’import en haut
+```python
+from utils.nl2sql_prompts import build_nl2sql_prompt
+```
+
+## B) Simplifie [build_prompt(...)](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:81:4-109:9)
+Tu peux soit supprimer la méthode actuelle, soit la garder mais la faire déléguer.
+
+Le plus simple (pédagogique) : remplacer le contenu de [build_prompt](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:81:4-109:9) par :
+
+```python
+def build_prompt(self, *, question: str, schema: str, language: str) -> str:
+    return build_nl2sql_prompt(question=question, schema=schema, language=language)
+```
+
+## C) Dans [generate_sql(...)](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:111:4-133:26), garde le reste identique
+Il doit continuer à faire :
+- `schema_text = _describe_sqlite_schema(...)` si `schema` est `None`
+- [prompt = self.build_prompt(...)](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:81:4-109:9)
+- appel `self._client.chat(...)`
+- nettoyage [_strip_code_fences(...)](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:15:0-19:23)
+
+---
+
+# 3) Test (toi) : retester la génération SQL
+
+1) Corrige le `.` final dans [scripts/test_generate_sql.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/scripts/test_generate_sql.py:0:0-0:0) si tu l’as encore (`print(sql).` → `print(sql)`).
+2) Exécute en mode module (important pour les imports) :
+
+```powershell
+python -m scripts.test_generate_sql
+```
+
+---
+
+## Ce que je veux que tu me colles ensuite
+- Le SQL généré pour :
+  - “Top 5 produits par revenu total”
+  - “Revenu total par mois (2024)”
+
+À partir de là, on pourra :
+- ajuster les exemples dans le prompt si nécessaire
+- puis passer à **Phase 2 — Tâche 3 : Interface NL2SQL** (page Streamlit, génération + édition + exécution + résultats).
+
+---
