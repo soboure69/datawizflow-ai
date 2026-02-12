@@ -1530,3 +1530,317 @@ python -m scripts.test_generate_sql
 - puis passer à **Phase 2 — Tâche 3 : Interface NL2SQL** (page Streamlit, génération + édition + exécution + résultats).
 
 ---
+
+## Nickel — le prompt engineering marche
+On voit bien l’amélioration entre les 2 runs :
+
+- **Run 1** : SQL correct mais sans `LIMIT`, alias “TotalRevenue” un peu arbitraire.
+- **Run 2** : SQL *propre*, joins explicites, `ORDER BY`, `LIMIT 200` ✅
+
+Ça valide que le **module [utils/nl2sql_prompts.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/utils/nl2sql_prompts.py:0:0-0:0) + exemples** influence bien le modèle.
+
+---
+
+# Prochaine étape logique : Phase 2 — Tâche 3 (Interface NL2SQL Streamlit)
+On va faire une page `pages/2_NL2SQL.py` qui permet :
+
+- **Entrée NL** (question)
+- bouton **Générer SQL** (via [OllamaService.generate_sql](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/ollama_service.py:111:4-133:26))
+- zone **SQL éditable**
+- bouton **Exécuter** (via [SQLExecutor.execute](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/sql_executor.py:27:4-34:51))
+- affichage des résultats en `dataframe`
+- exports CSV / Excel (Excel optionnel si tu veux rester minimal)
+
+## Mais avant : 2 petites décisions (pour apprendre correctement)
+
+### 1) Tu veux la validation read-only maintenant ou juste après ?
+- **Option A (recommandé)** : on ajoute tout de suite une validation simple avant exécution
+  - autoriser seulement `SELECT` / `WITH`
+  - refuser mots-clés dangereux
+  - forcer `LIMIT` si absent
+- **Option B** : on fait l’UI d’abord “brute”, puis on sécurise à la tâche suivante
+
+### 2) Résultats : tu veux une limite UI (pagination simple) ?
+- **Option A** : on affiche tout (mais la requête a déjà `LIMIT 200`)
+- **Option B** : on ajoute un select “limit 50/200/1000” côté UI
+
+Réponds :
+- `1A` ou `1B`
+- `2A` ou `2B`
+
+Ensuite je te donne **le code exact** à créer dans `pages/2_NL2SQL.py` (et les imports nécessaires) et tu l’ajoutes toi-même.
+
+---
+
+
+## Parfait — `1A` (validation maintenant) + `2B` (limit UI)
+
+On va créer **2 fichiers** :
+
+- `utils/sql_safety.py`  
+  - contient la **validation read-only** + ajout automatique de `LIMIT`
+- `pages/2_NL2SQL.py`  
+  - page Streamlit NL2SQL : question NL → génération SQL → édition → exécution → résultats + export CSV
+
+Je te donne **quoi créer / quoi coller** (tu fais les actions).
+
+---
+
+# 1) Action (toi) — créer `utils/sql_safety.py`
+
+## Pourquoi on le crée ?
+- Séparer la **sécurité SQL** de l’UI Streamlit.
+- Réutilisable plus tard (DataViz, historique, etc.).
+- Testable via pytest.
+
+## Contenu à coller
+```python
+from __future__ import annotations
+
+import re
+
+
+_FORBIDDEN = [
+    "insert",
+    "update",
+    "delete",
+    "drop",
+    "alter",
+    "create",
+    "pragma",
+    "attach",
+    "detach",
+    "vacuum",
+    "reindex",
+    "truncate",
+]
+
+_FORBIDDEN_RE = re.compile(r"\b(" + "|".join(_FORBIDDEN) + r")\b", re.IGNORECASE)
+_LIMIT_RE = re.compile(r"\blimit\b", re.IGNORECASE)
+
+
+def validate_readonly_sql(sql: str) -> None:
+    if not sql or not sql.strip():
+        raise ValueError("SQL vide")
+
+    s = sql.strip().lstrip("(").strip()
+
+    # Only SELECT / WITH allowed
+    if not (s.lower().startswith("select") or s.lower().startswith("with")):
+        raise ValueError("Seules les requêtes SELECT/WITH sont autorisées (read-only).")
+
+    # Simple multi-statement protection
+    # (au début on reste strict : refuse tout ';' pour éviter 'SELECT...; DROP ...')
+    if ";" in s:
+        raise ValueError("Les requêtes multi-statements sont interdites (retire le ';').")
+
+    # Forbidden keywords
+    m = _FORBIDDEN_RE.search(s)
+    if m:
+        raise ValueError(f"Mot-clé interdit détecté: {m.group(1)}")
+
+
+def ensure_limit(sql: str, limit: int) -> str:
+    s = sql.strip()
+    if _LIMIT_RE.search(s):
+        return s
+    return f"{s}\nLIMIT {int(limit)}"
+```
+
+---
+
+# 2) Action (toi) — créer `pages/2_NL2SQL.py`
+
+## Pourquoi on le crée ?
+- C’est l’interface centrale de Phase 2 :
+  - transformer une question en SQL
+  - te laisser contrôler le SQL (édition)
+  - exécuter et visualiser les résultats
+
+## Contenu à coller
+```python
+import io
+
+import pandas as pd
+import streamlit as st
+from dotenv import load_dotenv
+
+from services.config_manager import ConfigManager
+from services.ollama_service import OllamaService
+from services.sql_executor import SQLExecutor
+from utils.sql_safety import ensure_limit, validate_readonly_sql
+
+load_dotenv()
+
+st.title("NL2SQL")
+
+cfg = ConfigManager().load()
+
+executor = SQLExecutor(cfg.database_url)
+ollama = OllamaService(database_url=cfg.database_url)
+
+with st.sidebar:
+    st.header("NL2SQL Settings")
+    language = st.selectbox("Language", ["FR", "EN"], index=0, key="nl2sql_language")
+    model_info = f"{ollama.settings.model} @ {ollama.settings.base_url}"
+    st.caption(f"Ollama: {model_info}")
+
+    limit = st.selectbox("LIMIT", [50, 200, 1000], index=1, key="nl2sql_limit")
+
+
+st.subheader("Question (langage naturel)")
+question = st.text_area(
+    "Question",
+    value=st.session_state.get("nl2sql_question", ""),
+    height=100,
+    placeholder="Ex: Donne le chiffre d'affaires total par catégorie",
+)
+st.session_state["nl2sql_question"] = question
+
+col_a, col_b = st.columns([1, 1])
+with col_a:
+    if st.button("Générer SQL", disabled=not bool(question.strip())):
+        try:
+            sql_generated = ollama.generate_sql(question=question, language=language)
+            st.session_state["nl2sql_sql"] = sql_generated
+            st.success("SQL généré")
+        except Exception as e:
+            st.error(str(e))
+
+with col_b:
+    if st.button("Effacer"):
+        st.session_state["nl2sql_question"] = ""
+        st.session_state["nl2sql_sql"] = ""
+        st.session_state["nl2sql_df"] = None
+
+
+st.subheader("SQL (éditable)")
+sql_text = st.text_area(
+    "SQL",
+    value=st.session_state.get("nl2sql_sql", ""),
+    height=180,
+    placeholder="Le SQL généré apparaîtra ici…",
+)
+st.session_state["nl2sql_sql"] = sql_text
+
+
+st.subheader("Exécution")
+if st.button("Valider + Exécuter", disabled=not bool(sql_text.strip())):
+    try:
+        validate_readonly_sql(sql_text)
+        sql_to_run = ensure_limit(sql_text, limit=int(limit))
+        res = executor.execute(sql_to_run)
+
+        df = pd.DataFrame(res.rows, columns=res.columns) if res.columns else pd.DataFrame()
+        st.session_state["nl2sql_df"] = df
+        st.session_state["nl2sql_sql_executed"] = sql_to_run
+        st.success("Exécution OK")
+    except Exception as e:
+        st.error(str(e))
+
+
+df = st.session_state.get("nl2sql_df")
+sql_executed = st.session_state.get("nl2sql_sql_executed")
+
+if sql_executed:
+    st.caption("SQL exécuté :")
+    st.code(sql_executed, language="sql")
+
+if df is not None:
+    st.subheader("Résultats")
+    st.caption(f"Lignes: {len(df)}")
+    st.dataframe(df, use_container_width=True)
+
+    st.subheader("Export")
+    csv_bytes = df.to_csv(index=False).encode("utf-8")
+    st.download_button("Télécharger CSV", data=csv_bytes, file_name="nl2sql_result.csv", mime="text/csv")
+```
+
+---
+
+# 3) Test (toi)
+
+1) Relance Streamlit :
+```powershell
+streamlit run app.py
+```
+
+2) Va dans la page **NL2SQL**
+
+3) Tests à faire :
+- Question : **“Top 5 produits par revenu total”**
+- Puis clique :
+  - **Générer SQL**
+  - **Valider + Exécuter**
+- Change le `LIMIT` sidebar (50/200/1000) et observe.
+
+---
+
+# 4) Ce que tu me colles ensuite
+- Le SQL généré pour “Top 5 produits par revenu total”
+- Le résultat (au moins 2 lignes)
+- Et si tu as eu un blocage sur la validation (message exact)
+
+---
+
+## Statut
+- **Prompt engineering : OK**
+- On démarre **Tâche 3 Interface NL2SQL** avec validation read-only intégrée et limite UI (comme tu l’as choisi).
+
+---
+
+## Résultat : OK (NL2SQL → SQL → exécution)
+
+Ton SQL est **excellent** :
+- `JOIN` correct (`sales` ↔ `products`)
+- agrégation correcte `SUM(s.revenue)`
+- tri décroissant + `LIMIT 5`
+
+Et le tableau de résultats est cohérent (les laptops dominent, logique vu les prix/unités).
+
+---
+
+# 1) Petit point “qualité des données” (float)
+Tu vois `112818.15000000002` : c’est normal, c’est l’effet des **floats**.
+
+## Option (si tu veux un affichage plus propre)
+Dans le SQL, tu peux arrondir :
+```sql
+SELECT p.product_name, ROUND(SUM(s.revenue), 2) AS revenue_total
+...
+```
+On peut aussi arrondir côté pandas, mais SQL est plus simple.
+
+---
+
+# 2) Sécurité : tu as un bug à corriger (les `.` finaux)
+Je vois dans les fichiers créés :
+- [utils/sql_safety.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/utils/sql_safety.py:0:0-0:0) finit par `return f"..."\nLIMIT ...".` (un point final)
+- [pages/2_NL2SQL.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/pages/2_NL2SQL.py:0:0-0:0) finit par `mime="text/csv").` (point final)
+
+Ça peut provoquer un **SyntaxError** (ou casser au chargement Streamlit) dès que tu relances.
+
+## Action (toi)
+- Dans [utils/sql_safety.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/utils/sql_safety.py:0:0-0:0) : dernière ligne → enlève le `.` final
+  - doit finir par :
+  - `return f"{s}\nLIMIT {int(limit)}"`
+- Dans [pages/2_NL2SQL.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/pages/2_NL2SQL.py:0:0-0:0) : enlève le `.` final de la dernière ligne `st.download_button(...)`
+
+---
+
+# 3) Étape suivante (Phase 2) : compléter “Affichage des résultats” + Exports
+Tu as déjà :
+- affichage dataframe ✅
+- export CSV ✅
+
+Deux améliorations utiles (tu choisis) :
+- **A)** Export Excel (nécessite `openpyxl` dans [requirements.txt](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/requirements.txt:0:0-0:0))
+- **B)** Ajout d’un bloc “requêtes exemples” (selectbox) pour apprendre et tester rapidement
+
+Réponds `A`, `B` ou `A+B`, et je te donne les étapes exactes (toujours exécutées par toi).
+
+## Statut
+- **Interface NL2SQL de base : validée**
+- Prochaine action recommandée immédiate : **retirer les `.` finaux** pour stabiliser.
+
+---
