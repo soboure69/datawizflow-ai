@@ -1979,3 +1979,689 @@ Ensuite on pourra attaquer la suite du plan Phase 2 :
 - **Tests** `test_generate_sql_simple()` + `test_execute_query()` + test d’intégration.
 
 ---
+
+## Phase 2 — Tâche 5 : Historique & Sauvegarde (SQLite interne)
+
+On va ajouter une **base SQLite interne** (séparée de `db/demo.db`) pour stocker :
+- l’historique des requêtes NL2SQL (chaque exécution)
+- les requêtes “sauvegardées” (saved views)
+
+### Pourquoi une DB interne séparée ?
+- **Ne pas polluer** la DB métier (`demo.db`) avec des tables techniques.
+- Pouvoir changer de DB métier plus tard (Postgres, MySQL) tout en gardant ton historique local.
+- Éviter les conflits si tu régénères `demo.db`.
+
+---
+
+# 1) Action (toi) — ajouter une variable [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0)
+
+Dans [.env](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/.env:0:0-0:0), ajoute :
+
+```env
+INTERNAL_DB_URL=sqlite:///db/internal.db
+```
+
+*(Tu peux aussi le mettre dans `config/.env-template` plus tard.)*
+
+---
+
+# 2) Action (toi) — créer le service `services/history_store.py`
+
+## Pourquoi on crée ce service ?
+- Isoler toute la logique “historique/sauvegarde” hors de Streamlit.
+- Le rendre testable et réutilisable (ex: page dédiée Historique plus tard).
+
+Crée `services/history_store.py` et colle :
+
+```python
+from __future__ import annotations
+
+import os
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+
+def _sqlite_path_from_url(database_url: str) -> str:
+    if not database_url.startswith("sqlite:///"):
+        raise ValueError("Only sqlite:///... is supported for internal history DB")
+    return database_url.replace("sqlite:///", "", 1)
+
+
+@dataclass(frozen=True)
+class HistoryItem:
+    id: int
+    created_at: str
+    question: str
+    sql_text: str
+    executed_sql: str
+    row_count: int
+    status: str
+    error_message: Optional[str]
+
+
+@dataclass(frozen=True)
+class SavedView:
+    id: int
+    created_at: str
+    title: str
+    question: str
+    sql_text: str
+
+
+class HistoryStore:
+    def __init__(self, internal_db_url: Optional[str] = None) -> None:
+        self._db_url = internal_db_url or os.environ.get("INTERNAL_DB_URL", "sqlite:///db/internal.db")
+        self._db_path = _sqlite_path_from_url(self._db_url)
+        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path)
+        conn.execute("PRAGMA foreign_keys = ON;")
+        return conn
+
+    def ensure_schema(self) -> None:
+        conn = self._connect()
+        try:
+            cur = conn.cursor()
+            cur.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS query_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    sql_text TEXT NOT NULL,
+                    executed_sql TEXT NOT NULL,
+                    row_count INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    error_message TEXT
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_query_history_created_at
+                ON query_history(created_at);
+
+                CREATE TABLE IF NOT EXISTS saved_views (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    question TEXT NOT NULL,
+                    sql_text TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_saved_views_created_at
+                ON saved_views(created_at);
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def add_history(
+        self,
+        *,
+        question: str,
+        sql_text: str,
+        executed_sql: str,
+        row_count: int,
+        status: str,
+        error_message: Optional[str] = None,
+    ) -> None:
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO query_history(created_at, question, sql_text, executed_sql, row_count, status, error_message)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    datetime.utcnow().isoformat(timespec="seconds"),
+                    question,
+                    sql_text,
+                    executed_sql,
+                    int(row_count),
+                    status,
+                    error_message,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_history(self, limit: int = 50) -> list[HistoryItem]:
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, question, sql_text, executed_sql, row_count, status, error_message
+                FROM query_history
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+            return [HistoryItem(*r) for r in rows]
+        finally:
+            conn.close()
+
+    def save_view(self, *, title: str, question: str, sql_text: str) -> None:
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            conn.execute(
+                """
+                INSERT INTO saved_views(created_at, title, question, sql_text)
+                VALUES (?, ?, ?, ?)
+                """,
+                (datetime.utcnow().isoformat(timespec="seconds"), title, question, sql_text),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_saved_views(self, limit: int = 50) -> list[SavedView]:
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, created_at, title, question, sql_text
+                FROM saved_views
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (int(limit),),
+            ).fetchall()
+            return [SavedView(*r) for r in rows]
+        finally:
+            conn.close()
+```
+
+---
+
+# 3) Action (toi) — intégrer l’historique dans [pages/2_NL2SQL.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/pages/2_NL2SQL.py:0:0-0:0)
+
+## Objectif UI minimal
+- Après exécution :
+  - enregistrer un item d’historique (success/fail)
+- Ajouter 2 sections :
+  - **Sauvegarder cette requête**
+  - **Historique** + **Saved views** (liste, clic pour recharger SQL)
+
+### A) Ajouter l’import
+En haut de [pages/2_NL2SQL.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/pages/2_NL2SQL.py:0:0-0:0), ajoute :
+```python
+from services.history_store import HistoryStore
+```
+
+### B) Instancier le store
+Après `ollama = OllamaService(...)`, ajoute :
+```python
+history = HistoryStore()
+history.ensure_schema()
+```
+
+### C) Lors de “Valider + Exécuter” : enregistrer l’historique
+Dans le bloc `if st.button("Valider + Exécuter"...):`, juste après succès, ajoute :
+
+```python
+history.add_history(
+    question=question,
+    sql_text=sql_text,
+    executed_sql=sql_to_run,
+    row_count=len(df),
+    status="success",
+)
+```
+
+Et dans le `except Exception as e:` ajoute avant `st.error(...)` :
+
+```python
+history.add_history(
+    question=question,
+    sql_text=sql_text,
+    executed_sql=sql_text,
+    row_count=0,
+    status="error",
+    error_message=str(e),
+)
+```
+
+### D) Ajouter “Sauvegarder”
+Après l’affichage des résultats (ou avant), ajoute :
+
+```python
+st.subheader("Sauvegarde")
+
+title = st.text_input("Nom de la vue (titre)", value="")
+if st.button("Sauvegarder cette requête"):
+    if not title.strip():
+        st.error("Donne un titre.")
+    elif not sql_text.strip():
+        st.error("SQL vide.")
+    else:
+        history.save_view(title=title.strip(), question=question.strip(), sql_text=sql_text.strip())
+        st.success("Vue sauvegardée.")
+```
+
+### E) Ajouter “Historique” + “Saved views”
+En bas de page :
+
+```python
+st.subheader("Historique (dernières exécutions)")
+items = history.list_history(limit=20)
+if not items:
+    st.caption("Aucun historique pour l'instant.")
+else:
+    for it in items:
+        st.write(f"#{it.id} | {it.created_at} | {it.status} | rows={it.row_count}")
+        with st.expander("Voir / Recharger"):
+            st.write("Question:")
+            st.code(it.question)
+            st.write("SQL exécuté:")
+            st.code(it.executed_sql, language="sql")
+            if st.button(f"Recharger SQL (history #{it.id})"):
+                st.session_state["nl2sql_sql"] = it.sql_text
+
+st.subheader("Vues sauvegardées")
+views = history.list_saved_views(limit=20)
+if not views:
+    st.caption("Aucune vue sauvegardée.")
+else:
+    for v in views:
+        st.write(f"#{v.id} | {v.created_at} | {v.title}")
+        with st.expander("Voir / Recharger"):
+            st.write("Question:")
+            st.code(v.question)
+            st.write("SQL:")
+            st.code(v.sql_text, language="sql")
+            if st.button(f"Recharger SQL (view #{v.id})"):
+                st.session_state["nl2sql_sql"] = v.sql_text
+                st.session_state["nl2sql_question"] = v.question
+```
+
+---
+
+# 4) Test (toi)
+1) Relance Streamlit
+2) Fais une requête NL2SQL + exécute
+3) Vérifie :
+- l’historique se remplit
+- sauvegarde crée une entrée
+- “Recharger” remet bien le SQL dans la zone
+
+---
+
+## Petite question (avant que tu codes)
+Tu veux que l’historique sauvegarde aussi :
+- **le modèle** (`mistral`) et la langue (`FR/EN`) ?
+- et/ou la **DB cible** (database_url) ?
+
+Réponds `oui` ou `non`.  
+Ensuite, quand tu as fait l’intégration, colle-moi un screenshot ou juste le texte des sections “Historique” / “Vues sauvegardées”.
+
+**Statut :** on a démarré la **Phase 2 — Tâche 5** (design + code à intégrer par toi).
+
+---
+
+
+## OK — on stocke aussi `model`, `language`, [database_url](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/config_manager.py:36:4-42:18) (oui + oui)
+
+On va faire 3 changements :
+
+- **DB interne** : ajouter 3 colonnes dans `query_history` + `saved_views`
+- **Service** `HistoryStore` : accepter/enregistrer ces champs + les lire
+- **UI** (page NL2SQL) : afficher ces infos et les enregistrer au moment “exécuter” / “sauvegarder”
+
+Je te propose une mini-“migration” SQLite **simple** (sans outil externe).
+
+---
+
+# 1) Modifier le schéma interne (migration safe)
+
+## Pourquoi ?
+Tu as peut-être déjà créé `db/internal.db`. Il faut donc une logique qui :
+- crée les tables si elles n’existent pas
+- **ajoute** les colonnes si elles manquent (ALTER TABLE)
+
+## Action (toi) : dans `services/history_store.py`, modifie `ensure_schema()`
+
+### A) Ajoute 3 colonnes à `query_history`
+On veut :
+- `model TEXT`
+- `language TEXT`
+- `database_url TEXT`
+
+### B) Ajoute aussi à `saved_views`
+Même idée :
+- `model TEXT`
+- `language TEXT`
+- `database_url TEXT`
+
+### C) Implémente une fonction helper “add column if not exists”
+SQLite ne supporte pas `ADD COLUMN IF NOT EXISTS` partout selon versions, donc on fait :
+- `PRAGMA table_info(table)`
+- si la colonne n’est pas là → `ALTER TABLE ... ADD COLUMN ...`
+
+#### Code à ajouter (dans `HistoryStore`, par exemple au-dessus de `ensure_schema`)
+```python
+def _column_exists(cur: sqlite3.Cursor, table: str, column: str) -> bool:
+    cols = cur.execute(f"PRAGMA table_info('{table}')").fetchall()
+    names = {c[1] for c in cols}
+    return column in names
+
+
+def _add_column_if_missing(cur: sqlite3.Cursor, table: str, column: str, col_type: str) -> None:
+    if not _column_exists(cur, table, column):
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
+```
+
+#### Puis dans `ensure_schema()` après la création des tables, ajoute :
+```python
+_add_column_if_missing(cur, "query_history", "model", "TEXT")
+_add_column_if_missing(cur, "query_history", "language", "TEXT")
+_add_column_if_missing(cur, "query_history", "database_url", "TEXT")
+
+_add_column_if_missing(cur, "saved_views", "model", "TEXT")
+_add_column_if_missing(cur, "saved_views", "language", "TEXT")
+_add_column_if_missing(cur, "saved_views", "database_url", "TEXT")
+```
+
+---
+
+# 2) Modifier les dataclasses + requêtes SELECT
+
+## Action (toi) : update `HistoryItem` et `SavedView`
+
+### A) `HistoryItem`
+Ajoute les champs :
+- `model: Optional[str]`
+- `language: Optional[str]`
+- `database_url: Optional[str]`
+
+### B) `SavedView`
+Ajoute :
+- `model: Optional[str]`
+- `language: Optional[str]`
+- `database_url: Optional[str]`
+
+## Action (toi) : update les SELECT dans `list_history()` / `list_saved_views()`
+### `list_history()` doit sélectionner aussi `model, language, database_url`
+Par exemple :
+```sql
+SELECT id, created_at, question, sql_text, executed_sql, row_count, status, error_message,
+       model, language, database_url
+FROM query_history
+...
+```
+
+### `list_saved_views()` pareil
+```sql
+SELECT id, created_at, title, question, sql_text, model, language, database_url
+FROM saved_views
+...
+```
+
+---
+
+# 3) Modifier `add_history()` et `save_view()` pour enregistrer ces champs
+
+## Action (toi) : étendre les signatures
+
+### A) `add_history(...)`
+Ajoute les paramètres optionnels :
+- `model: Optional[str] = None`
+- `language: Optional[str] = None`
+- `database_url: Optional[str] = None`
+
+Et insère-les dans l’`INSERT INTO query_history(...)`.
+
+### B) `save_view(...)`
+Ajoute aussi :
+- `model: Optional[str] = None`
+- `language: Optional[str] = None`
+- `database_url: Optional[str] = None`
+
+Et insère-les dans `saved_views(...)`.
+
+---
+
+# 4) UI : passer ces infos depuis la page NL2SQL
+
+Dans [pages/2_NL2SQL.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/pages/2_NL2SQL.py:0:0-0:0) tu as déjà :
+- `language` (sidebar)
+- `ollama.settings.model`
+- [cfg.database_url](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/config_manager.py:36:4-42:18)
+
+## Action (toi) : lors du succès d’exécution
+Quand tu appelles `history.add_history(...)`, ajoute :
+```python
+model=ollama.settings.model,
+language=language,
+database_url=cfg.database_url,
+```
+
+## Action (toi) : lors d’une erreur
+Même chose dans le bloc error (avec `status="error"`).
+
+## Action (toi) : lors du “Sauvegarder cette requête”
+Ajoute aussi :
+```python
+model=ollama.settings.model,
+language=language,
+database_url=cfg.database_url,
+```
+
+## Action (toi) : affichage
+Dans les sections “Historique” / “Vues sauvegardées”, affiche par exemple :
+- `model`
+- `language`
+- [database_url](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/config_manager.py:36:4-42:18) (ou juste le nom du fichier SQLite si tu veux)
+
+---
+
+# Test rapide après modifs (par toi)
+1) Relance Streamlit
+2) Exécute une requête
+3) Vérifie dans l’historique que tu vois :
+- `mistral`
+- `FR`
+- `sqlite:///db/demo.db`
+4) Sauvegarde une vue → vérifie les mêmes champs
+
+---
+
+## Pour éviter de te perdre : tu préfères que je te donne un patch “exact” (diff) pour `history_store.py` ?
+Réponds **oui**, et je te liste précisément :
+- les nouveaux champs dans les dataclasses
+- les `INSERT` / `SELECT` mis à jour
+- le bloc migration à coller
+
+**Statut :** on est bien sur **Phase 2 — Tâche 5**, et on vient de définir la migration + intégration UI pour `model/language/database_url`.
+
+---
+
+
+
+
+Pour enregistrer `model / language / database_url` à l’`INSERT`, il faut faire **2 choses** :
+
+1) **Étendre les méthodes** [add_history()](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/history_store.py:110:4-140:24) et [save_view()](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/history_store.py:159:4-172:24) pour accepter ces champs  
+2) **Modifier les requêtes INSERT** pour insérer dans les nouvelles colonnes  
+3) **Passer ces valeurs depuis [pages/2_NL2SQL.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/pages/2_NL2SQL.py:0:0-0:0)** lors des appels
+
+Je te donne exactement quoi changer.
+
+---
+
+# 1) Modifier [HistoryStore.add_history()](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/history_store.py:110:4-140:24) (services/history_store.py)
+
+## A) Étendre la signature
+Dans [add_history(...)](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/history_store.py:110:4-140:24), ajoute ces paramètres (optionnels) :
+
+```python
+model: Optional[str] = None,
+language: Optional[str] = None,
+database_url: Optional[str] = None,
+```
+
+Donc ça devient par exemple :
+
+```python
+def add_history(
+    self,
+    *,
+    question: str,
+    sql_text: str,
+    executed_sql: str,
+    row_count: int,
+    status: str,
+    error_message: Optional[str] = None,
+    model: Optional[str] = None,
+    language: Optional[str] = None,
+    database_url: Optional[str] = None,
+) -> None:
+```
+
+## B) Modifier l’INSERT
+Remplace :
+
+```sql
+INSERT INTO query_history(created_at, question, sql_text, executed_sql, row_count, status, error_message)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+```
+
+par :
+
+```sql
+INSERT INTO query_history(
+  created_at, question, sql_text, executed_sql, row_count, status, error_message,
+  model, language, database_url
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+```
+
+Et dans le tuple de valeurs, ajoute à la fin :
+
+```python
+model,
+language,
+database_url,
+```
+
+---
+
+# 2) Modifier [HistoryStore.save_view()](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/history_store.py:159:4-172:24)
+
+## A) Étendre la signature
+Passe de :
+
+```python
+def save_view(self, *, title: str, question: str, sql_text: str) -> None:
+```
+
+à :
+
+```python
+def save_view(
+    self,
+    *,
+    title: str,
+    question: str,
+    sql_text: str,
+    model: Optional[str] = None,
+    language: Optional[str] = None,
+    database_url: Optional[str] = None,
+) -> None:
+```
+
+## B) Modifier l’INSERT
+Remplace :
+
+```sql
+INSERT INTO saved_views(created_at, title, question, sql_text)
+VALUES (?, ?, ?, ?)
+```
+
+par :
+
+```sql
+INSERT INTO saved_views(created_at, title, question, sql_text, model, language, database_url)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+```
+
+Et ajoute les valeurs dans le tuple :
+
+```python
+(datetime.utcnow().isoformat(timespec="seconds"), title, question, sql_text, model, language, database_url)
+```
+
+---
+
+# 3) Modifier [pages/2_NL2SQL.py](cci:7://file:///c:/Users/bello/Documents/datawizflow-ai/pages/2_NL2SQL.py:0:0-0:0) pour passer ces champs
+
+Tu as déjà :
+- `language` (sidebar)
+- `ollama.settings.model`
+- `cfg.database_url`
+
+## A) Sur succès d’exécution (ton [history.add_history(...)](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/history_store.py:110:4-140:24) ligne ~110)
+Ajoute :
+
+```python
+model=ollama.settings.model,
+language=language,
+database_url=cfg.database_url,
+```
+
+## B) Sur erreur (le [history.add_history(...)](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/history_store.py:110:4-140:24) dans le `except`)
+Ajoute les mêmes champs.
+
+## C) Sur sauvegarde de vue
+Tu as :
+
+```python
+history.save_view(title=title.strip(), question=question.strip(), sql_text=sql_text.strip())
+```
+
+Remplace par :
+
+```python
+history.save_view(
+    title=title.strip(),
+    question=question.strip(),
+    sql_text=sql_text.strip(),
+    model=ollama.settings.model,
+    language=language,
+    database_url=cfg.database_url,
+)
+```
+
+---
+
+# 4) (Recommandé) Afficher ces infos dans l’UI
+Dans les sections Historique / Vues sauvegardées, tu peux enrichir les `st.write` :
+
+### Historique
+```python
+st.write(f"#{it.id} | {it.created_at} | {it.status} | rows={it.row_count} | {it.model} | {it.language}")
+```
+
+### Vues
+```python
+st.write(f"#{v.id} | {v.created_at} | {v.title} | {v.model} | {v.language}")
+```
+
+---
+
+# 5) Test rapide
+1) Relance `streamlit run app.py`
+2) Exécute une requête
+3) Regarde l’historique : `model/language/database_url` doivent être remplis (plus `NULL`)
+
+Si tu veux, colle-moi ton bloc [add_history()](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/history_store.py:110:4-140:24) actuel après modification et je te dis si l’INSERT/tuple est bien aligné (nombre de `?` = nombre de valeurs).
+
+---

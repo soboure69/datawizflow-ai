@@ -8,6 +8,7 @@ from services.config_manager import ConfigManager
 from services.ollama_service import OllamaService
 from services.sql_executor import SQLExecutor
 from utils.sql_safety import ensure_limit, validate_readonly_sql
+from services.history_store import HistoryStore
 
 load_dotenv()
 
@@ -17,6 +18,8 @@ cfg = ConfigManager().load()
 
 executor = SQLExecutor(cfg.database_url)
 ollama = OllamaService(database_url=cfg.database_url)
+history = HistoryStore()
+history.ensure_schema()
 
 with st.sidebar:
     st.header("NL2SQL Settings")
@@ -104,7 +107,28 @@ if st.button("Valider + Exécuter", disabled=not bool(sql_text.strip())):
         st.session_state["nl2sql_df"] = df
         st.session_state["nl2sql_sql_executed"] = sql_to_run
         st.success("Exécution OK")
+        history.add_history(
+            question=question,
+            sql_text=sql_text,
+            executed_sql=sql_to_run,
+            row_count=len(df),
+            status="success",
+            model=ollama.settings.model,
+            language=language,
+            database_url=cfg.database_url,
+        )
     except Exception as e:
+        history.add_history(
+            question=question,
+            sql_text=sql_text,
+            executed_sql=sql_text,
+            row_count=0,
+            status="error",
+            error_message=str(e),
+            model=ollama.settings.model,
+            language=language,
+            database_url=cfg.database_url,
+        )
         st.error(str(e))
 
 
@@ -116,6 +140,20 @@ if sql_executed:
     st.code(sql_executed, language="sql")
 
 if df is not None:
+    st.subheader("Sauvegarde")
+
+    title = st.text_input("Nom de la vue (titre)", value="")
+    if st.button("Sauvegarder cette requête"):
+        if not title.strip():
+            st.error("Donne un titre.")
+        elif not sql_text.strip():
+            st.error("SQL vide.")
+        else:
+            history.save_view(title=title.strip(), question=question.strip(), sql_text=sql_text.strip(),
+                              model=ollama.settings.model,
+                              language=language,
+                              database_url=cfg.database_url)
+            st.success("Vue sauvegardée.")
     st.subheader("Résultats")
     st.caption(f"Lignes: {len(df)}")
     st.dataframe(df, use_container_width=True)
@@ -130,6 +168,37 @@ if df is not None:
     st.download_button(
         "Télécharger Excel",
         data=excel_buffer.getvalue(),
-    file_name="nl2sql_result.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+        file_name="nl2sql_result.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    
+    st.subheader("Historique (dernières exécutions)")
+    items = history.list_history(limit=20)
+    if not items:
+        st.caption("Aucun historique pour l'instant.")
+    else:
+        for it in items:
+            st.write(f"#{it.id} | {it.created_at} | {it.status} | rows={it.row_count}")
+            with st.expander("Voir / Recharger"):
+                st.write("Question:")
+                st.code(it.question)
+                st.write("SQL exécuté:")
+                st.code(it.executed_sql, language="sql")
+                if st.button(f"Recharger SQL (history #{it.id})"):
+                    st.session_state["nl2sql_sql"] = it.sql_text
+
+st.subheader("Vues sauvegardées")
+views = history.list_saved_views(limit=20)
+if not views:
+    st.caption("Aucune vue sauvegardée.")
+else:
+    for v in views:
+        st.write(f"#{v.id} | {v.created_at} | {v.title} | {v.model} | {v.language}")
+        with st.expander("Voir / Recharger"):
+            st.write("Question:")
+            st.code(v.question)
+            st.write("SQL:")
+            st.code(v.sql_text, language="sql")
+            if st.button(f"Recharger SQL (view #{v.id})"):
+                st.session_state["nl2sql_sql"] = v.sql_text
+                st.session_state["nl2sql_question"] = v.question
