@@ -63,3 +63,13 @@ def test_transcribe_requires_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(speech.shutil, "which", lambda name: None)
     with pytest.raises(RuntimeError, match="ffmpeg"):
         speech.WhisperService().transcribe(b"audio", ".wav", "FR")
+
+
+def test_transcribe_uses_subprocess_when_torch_cannot_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _broken(name: str) -> object:
+        raise OSError("c10.dll")
+
+    monkeypatch.setattr(speech, "_load_model", _broken)
+    monkeypatch.setattr(speech, "_transcribe_in_subprocess", lambda *args: "Quel est le total")
+    text = speech.WhisperService(model_name="tiny").transcribe(b"audio", ".wav", "FR")
+    assert text == "Quel est le total"

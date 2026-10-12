@@ -1,16 +1,13 @@
 app:
   name: DataWizflow AI
   default_language: FR
-
 database:
   url: ${DATABASE_URL}
-
 ollama:
-  url: ${OLLAMA_URL}
-  model: ${OLLAMA_MODEL}
+  url: http://localhost:11434
+  model: mistral:latest
   temperature: 0.3
-  timeout: 60
-
+  timeout: 60.0
 dataviz:
   default_library: plotly
-  theme: light
+  theme: dark

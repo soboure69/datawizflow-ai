@@ -24,7 +24,8 @@ La voix demande Whisper et ffmpeg. Sans ces deux outils, le reste de l'applicati
 
 ```powershell
 winget install Gyan.FFmpeg
-pip install openai-whisper
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install openai-whisper==20240930 --no-build-isolation
 ```
 
 Le premier clic sur Transcrire télécharge le modèle indiqué par `WHISPER_MODEL` (par défaut `small`). Le texte apparaît dans la zone de question : relisez-le avant de générer le SQL.

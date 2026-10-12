@@ -68,6 +68,6 @@ Le sélecteur **FR / EN** de la barre latérale change les libellés et la langu
 
 - **Ollama ne répond pas** : vérifiez `ollama list` et l'URL dans Configuration. Le défaut est `http://localhost:11434`.
 - **SQL refusé** : la requête doit commencer par `SELECT` ou `WITH`, sans point-virgule.
-- **Voix indisponible** : installez ffmpeg (`winget install Gyan.FFmpeg`) et `pip install openai-whisper`, puis redémarrez l'application. Le premier clic sur Transcrire télécharge le modèle.
+- **Voix indisponible** : installez ffmpeg (`winget install Gyan.FFmpeg`), puis `pip install torch --index-url https://download.pytorch.org/whl/cpu` et `pip install openai-whisper==20240930 --no-build-isolation`. Redémarrez l'application. Le premier clic sur Transcrire télécharge le modèle.
 - **Driver PostgreSQL ou MySQL manquant** : ils sont dans `requirements.txt` (`psycopg2-binary`, `pymysql`). MSSQL demande en plus un driver ODBC installé sur la machine.
 - **Graphique vide** : le code doit créer une variable `fig`.
