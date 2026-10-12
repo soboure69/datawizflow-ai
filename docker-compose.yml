@@ -1,0 +1,28 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      DATABASE_URL: sqlite:///db/demo.db
+      INTERNAL_DB_URL: sqlite:///db/internal.db
+      OLLAMA_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: mistral
+    volumes:
+      - ./config:/app/config
+      - ./db:/app/db
+      - ./uploads:/app/uploads
+      - ./logs:/app/logs
+    security_opt:
+      - no-new-privileges:true
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["with-ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  ollama:

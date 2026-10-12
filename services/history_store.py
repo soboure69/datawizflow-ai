@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 import sqlite3
@@ -39,6 +39,7 @@ class SavedView:
     model: Optional[str]
     language: Optional[str]
     database_url: Optional[str]
+    description: Optional[str] = None
 
 
 class HistoryStore:
@@ -87,7 +88,8 @@ class HistoryStore:
                     created_at TEXT NOT NULL,
                     title TEXT NOT NULL,
                     question TEXT NOT NULL,
-                    sql_text TEXT NOT NULL
+                    sql_text TEXT NOT NULL,
+                    description TEXT
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_saved_views_created_at
@@ -103,6 +105,7 @@ class HistoryStore:
             self._add_column_if_missing(cur, "saved_views", "model", "TEXT")
             self._add_column_if_missing(cur, "saved_views", "language", "TEXT")
             self._add_column_if_missing(cur, "saved_views", "database_url", "TEXT")
+            self._add_column_if_missing(cur, "saved_views", "description", "TEXT")
             
             conn.commit()
         finally:
@@ -146,54 +149,109 @@ class HistoryStore:
         finally:
             conn.close()
 
-    def list_history(self, limit: int = 50) -> list[HistoryItem]:
+    def list_history(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        search_text: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> list[HistoryItem]:
         self.ensure_schema()
         conn = self._connect()
         try:
-            rows = conn.execute(
-                """
-                SELECT id, created_at, question, sql_text, executed_sql, row_count, status, error_message, model, language, database_url
-                FROM query_history
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (int(limit),),
-            ).fetchall()
+            sql = (
+                "SELECT id, created_at, question, sql_text, executed_sql, row_count, status, error_message, model, language, database_url "
+                "FROM query_history"
+            )
+            params: list[Any] = []
+            where: list[str] = []
+
+            if status:
+                where.append("status = ?")
+                params.append(status)
+
+            if search_text and search_text.strip():
+                where.append("(question LIKE ? OR sql_text LIKE ? OR executed_sql LIKE ?)")
+                like = f"%{search_text.strip()}%"
+                params.extend([like, like, like])
+
+            if where:
+                sql += " WHERE " + " AND ".join(where)
+
+            sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
+
+            rows = conn.execute(sql, tuple(params)).fetchall()
             return [HistoryItem(*r) for r in rows]
+        finally:
+            conn.close()
+
+    def delete_history(self, history_id: int) -> None:
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM query_history WHERE id = ?", (int(history_id),))
+            conn.commit()
         finally:
             conn.close()
 
     def save_view(self, *, title: str, question: str, sql_text: str,
                   model: Optional[str] = None,
                   language: Optional[str] = None,
-                  database_url: Optional[str] = None) -> None:
+                  database_url: Optional[str] = None,
+                  description: Optional[str] = None) -> None:
         self.ensure_schema()
         conn = self._connect()
         try:
             conn.execute(
                 """
-                INSERT INTO saved_views(created_at, title, question, sql_text, model, language, database_url)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO saved_views(created_at, title, question, sql_text, model, language, database_url, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (datetime.utcnow().isoformat(timespec="seconds"), title, question, sql_text, model, language, database_url),
+                (datetime.utcnow().isoformat(timespec="seconds"), title, question, sql_text, model, language, database_url, description),
             )
             conn.commit()
         finally:
             conn.close()
-
-    def list_saved_views(self, limit: int = 50) -> list[SavedView]:
+    def list_saved_views(
+        self,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        search_text: Optional[str] = None,
+    ) -> list[SavedView]:
         self.ensure_schema()
         conn = self._connect()
         try:
-            rows = conn.execute(
-                """
-                SELECT id, created_at, title, question, sql_text, model, language, database_url
-                FROM saved_views
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (int(limit),),
-            ).fetchall()
+            sql = (
+                "SELECT id, created_at, title, question, sql_text, model, language, database_url, description "
+                "FROM saved_views"
+            )
+            params: list[Any] = []
+            where: list[str] = []
+
+            if search_text and search_text.strip():
+                where.append("(title LIKE ? OR question LIKE ? OR sql_text LIKE ?)")
+                like = f"%{search_text.strip()}%"
+                params.extend([like, like, like])
+
+            if where:
+                sql += " WHERE " + " AND ".join(where)
+
+            sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
+
+            rows = conn.execute(sql, tuple(params)).fetchall()
             return [SavedView(*r) for r in rows]
+        finally:
+            conn.close()
+
+    def delete_saved_view(self, view_id: int) -> None:
+        self.ensure_schema()
+        conn = self._connect()
+        try:
+            conn.execute("DELETE FROM saved_views WHERE id = ?", (int(view_id),))
+            conn.commit()
         finally:
             conn.close()

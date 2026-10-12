@@ -1,0 +1,14 @@
+profiles:
+  demo:
+    name: demo
+    db_type: sqlite
+    path: db/demo.db
+    password: ""
+  postgres_local:
+    name: postgres_local
+    db_type: postgresql
+    host: localhost
+    port: 5432
+    user: postgres
+    password: ""
+    database: datawizflow

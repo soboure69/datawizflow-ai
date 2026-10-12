@@ -1,204 +1,313 @@
-import io
+import time
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
-from services.config_manager import ConfigManager
-from services.ollama_service import OllamaService
-from services.sql_executor import SQLExecutor
-from utils.sql_safety import ensure_limit, validate_readonly_sql
 from services.history_store import HistoryStore
+from services.connection_store import mask_url
+from services.speech_to_text import WhisperService
+from services.sql_executor import SQLExecutor
+from utils.logger import get_logger
+from utils.sql_safety import ensure_limit, validate_readonly_sql
+from utils.ui import L, apply_source, init_app, ollama_from_session, render_exports, render_profile_table, show_safe_error, sidebar_language, source_options
 
-load_dotenv()
+_LOGGER = get_logger("nl2sql")
 
-st.title("NL2SQL")
 
-cfg = ConfigManager().load()
+def _question_examples(language: str, schema: str) -> dict[str, str]:
+    if "sales" in schema.lower():
+        if language == "EN":
+            return {
+                "—": "",
+                "Top products": "Show the top 5 products by revenue",
+                "Revenue by region": "Total revenue by region",
+                "Revenue by month": "Total revenue by month in 2024",
+            }
+        return {
+            "—": "",
+            "Top produits": "Top 5 produits par revenu total",
+            "Revenu par région": "Revenu total par région",
+            "Revenu par mois": "Revenu total par mois en 2024",
+        }
+    if language == "EN":
+        return {"—": "", "Preview": "Show 20 rows"}
+    return {"—": "", "Aperçu": "Montre 20 lignes"}
 
-executor = SQLExecutor(cfg.database_url)
-ollama = OllamaService(database_url=cfg.database_url)
-history = HistoryStore()
-history.ensure_schema()
 
-with st.sidebar:
-    st.header("NL2SQL Settings")
-    language = st.selectbox("Language", ["FR", "EN"], index=0, key="nl2sql_language")
-    model_info = f"{ollama.settings.model} @ {ollama.settings.base_url}"
-    st.caption(f"Ollama: {model_info}")
-
-    limit = st.selectbox("LIMIT", [50, 200, 1000], index=1, key="nl2sql_limit")
-
-examples = {
-    "—": "",
-    "Top 5 produits par revenu": """SELECT p.product_name, ROUND(SUM(s.revenue), 2) AS revenue_total
+def _sql_examples() -> dict[str, str]:
+    return {
+        "—": "",
+        "Top 5 produits": """SELECT p.product_name, ROUND(SUM(s.revenue), 2) AS revenue_total
 FROM sales s
 JOIN products p ON p.product_id = s.product_id
 GROUP BY p.product_name
 ORDER BY revenue_total DESC
 LIMIT 5""",
-    "Revenu total par catégorie": """SELECT p.category, ROUND(SUM(s.revenue), 2) AS revenue_total
-FROM sales s
-JOIN products p ON p.product_id = s.product_id
-GROUP BY p.category
-ORDER BY revenue_total DESC""",
-    "Revenu total par région": """SELECT r.region_name, ROUND(SUM(s.revenue), 2) AS revenue_total
+        "Revenu par région": """SELECT r.region_name, ROUND(SUM(s.revenue), 2) AS revenue_total
 FROM sales s
 JOIN regions r ON r.region_id = s.region_id
 GROUP BY r.region_name
 ORDER BY revenue_total DESC""",
-    "Revenu total par mois (2024)": """SELECT d.year, d.month, ROUND(SUM(s.revenue), 2) AS revenue_total
-FROM sales s
-JOIN dates d ON d.date = s.sale_date
-GROUP BY d.year, d.month
-ORDER BY d.year, d.month""",
-}
-
-with st.sidebar:
-    st.subheader("Exemples")
-    example_name = st.selectbox("Charger un exemple", list(examples.keys()), index=0)
-    if st.button("Charger l'exemple", disabled=(example_name == "—")):
-        st.session_state["nl2sql_sql"] = examples[example_name]
-
-st.subheader("Question (langage naturel)")
-question = st.text_area(
-    "Question",
-    value=st.session_state.get("nl2sql_question", ""),
-    height=100,
-    placeholder="Ex: Donne le chiffre d'affaires total par catégorie",
-)
-st.session_state["nl2sql_question"] = question
-
-col_a, col_b = st.columns([1, 1])
-with col_a:
-    if st.button("Générer SQL", disabled=not bool(question.strip())):
-        try:
-            sql_generated = ollama.generate_sql(question=question, language=language)
-            st.session_state["nl2sql_sql"] = sql_generated
-            st.success("SQL généré")
-        except Exception as e:
-            st.error(str(e))
-
-with col_b:
-    if st.button("Effacer"):
-        st.session_state["nl2sql_question"] = ""
-        st.session_state["nl2sql_sql"] = ""
-        st.session_state["nl2sql_df"] = None
+    }
 
 
-st.subheader("SQL (éditable)")
-sql_text = st.text_area(
-    "SQL",
-    value=st.session_state.get("nl2sql_sql", ""),
-    height=180,
-    placeholder="Le SQL généré apparaîtra ici…",
-)
-st.session_state["nl2sql_sql"] = sql_text
+def _schema_text(executor: SQLExecutor) -> str:
+    url = executor.database_url
+    if st.session_state.get("schema_url") != url:
+        st.session_state["schema_text"] = executor.get_schema()
+        st.session_state["schema_url"] = url
+        st.session_state["active_dialect"] = executor.get_dialect()
+    return str(st.session_state.get("schema_text") or "")
 
 
-st.subheader("Exécution")
-if st.button("Valider + Exécuter", disabled=not bool(sql_text.strip())):
+def run_sql(*, question: str, sql_text: str, executor: SQLExecutor, history: HistoryStore, language: str, model: str) -> None:
     try:
         validate_readonly_sql(sql_text)
-        sql_to_run = ensure_limit(sql_text, limit=int(limit))
-        res = executor.execute(sql_to_run)
-
-        df = pd.DataFrame(res.rows, columns=res.columns) if res.columns else pd.DataFrame()
-        st.session_state["nl2sql_df"] = df
+        sql_to_run = ensure_limit(sql_text, limit=int(st.session_state.get("nl2sql_limit") or 200))
+        started = time.perf_counter()
+        result = executor.execute(sql_to_run, timeout=30)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        frame = pd.DataFrame(result.rows, columns=result.columns) if result.columns else pd.DataFrame()
+        st.session_state["nl2sql_df"] = frame
         st.session_state["nl2sql_sql_executed"] = sql_to_run
-        st.success("Exécution OK")
+        st.session_state["nl2sql_elapsed_ms"] = elapsed_ms
         history.add_history(
             question=question,
             sql_text=sql_text,
             executed_sql=sql_to_run,
-            row_count=len(df),
+            row_count=len(frame),
             status="success",
-            model=ollama.settings.model,
+            model=model,
             language=language,
-            database_url=cfg.database_url,
+            database_url=mask_url(executor.database_url),
         )
-    except Exception as e:
+        _LOGGER.info("query ok rows=%s ms=%s", len(frame), elapsed_ms)
+        st.success(L("run_ok"))
+    except Exception as exc:
         history.add_history(
             question=question,
             sql_text=sql_text,
             executed_sql=sql_text,
             row_count=0,
             status="error",
-            error_message=str(e),
-            model=ollama.settings.model,
+            error_message=str(exc),
+            model=model,
             language=language,
-            database_url=cfg.database_url,
+            database_url=mask_url(executor.database_url),
         )
-        st.error(str(e))
+        _LOGGER.info("query error %s", exc)
+        show_safe_error(exc, "nl2sql")
 
 
-df = st.session_state.get("nl2sql_df")
-sql_executed = st.session_state.get("nl2sql_sql_executed")
+init_app()
+language = sidebar_language()
+st.title(L("nl2sql_title"))
 
-if sql_executed:
-    st.caption("SQL exécuté :")
-    st.code(sql_executed, language="sql")
+database_url = str(st.session_state.get("active_database_url"))
+executor = SQLExecutor(database_url)
+ollama = ollama_from_session(database_url)
+history = HistoryStore()
+history.ensure_schema()
 
-if df is not None:
-    st.subheader("Sauvegarde")
+try:
+    schema = _schema_text(executor)
+except Exception as exc:
+    schema = ""
+    show_safe_error(exc, "nl2sql")
 
-    title = st.text_input("Nom de la vue (titre)", value="")
-    if st.button("Sauvegarder cette requête"):
-        if not title.strip():
-            st.error("Donne un titre.")
-        elif not sql_text.strip():
-            st.error("SQL vide.")
-        else:
-            history.save_view(title=title.strip(), question=question.strip(), sql_text=sql_text.strip(),
-                              model=ollama.settings.model,
-                              language=language,
-                              database_url=cfg.database_url)
-            st.success("Vue sauvegardée.")
-    st.subheader("Résultats")
-    st.caption(f"Lignes: {len(df)}")
-    st.dataframe(df, use_container_width=True)
+with st.sidebar:
+    st.caption(f"Ollama : {ollama.settings.model}")
+    st.selectbox(L("limit"), [50, 200, 1000], index=1, key="nl2sql_limit")
+    options = source_options()
+    labels = {key: label for key, label in options}
+    current_label = str(st.session_state.get("active_source_label") or "")
+    keys = [key for key, _ in options]
+    default_index = 0
+    for i, key in enumerate(keys):
+        if labels[key] == current_label:
+            default_index = i
+    choice = st.selectbox(L("source"), keys, index=default_index, format_func=lambda key: labels[key])
+    if st.button(L("use_profile"), key="nl2sql_use_source"):
+        apply_source(choice)
+        st.session_state.pop("schema_url", None)
+        st.rerun()
 
-    st.subheader("Export")
-    csv_bytes = df.to_csv(index=False).encode("utf-8")
-    st.download_button("Télécharger CSV", data=csv_bytes, file_name="nl2sql_result.csv", mime="text/csv")
-    excel_buffer = io.BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="results")
+    examples = _question_examples(language, schema)
+    example_name = st.selectbox(L("examples"), list(examples.keys()))
+    if st.button(L("load_example"), disabled=example_name == "—"):
+        st.session_state["nl2sql_question"] = examples[example_name]
 
-    st.download_button(
-        "Télécharger Excel",
-        data=excel_buffer.getvalue(),
-        file_name="nl2sql_result.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    
-    st.subheader("Historique (dernières exécutions)")
-    items = history.list_history(limit=20)
-    if not items:
-        st.caption("Aucun historique pour l'instant.")
+    sql_examples = _sql_examples()
+    sql_example_name = st.selectbox(L("sql_examples"), list(sql_examples.keys()))
+    if st.button(L("load_example"), key="load_sql_example", disabled=sql_example_name == "—"):
+        st.session_state["nl2sql_sql"] = sql_examples[sql_example_name]
+
+audio = st.file_uploader(L("voice_upload"), type=["wav", "mp3", "m4a", "ogg"])
+if audio is not None and st.button(L("transcribe")):
+    try:
+        with st.spinner(L("transcribe_wait")):
+            text = WhisperService().transcribe(audio.getvalue(), "." + audio.name.rsplit(".", 1)[-1], language)
+        st.session_state["nl2sql_question"] = text
+        st.rerun()
+    except (ValueError, RuntimeError) as exc:
+        st.error(str(exc))
+    except Exception as exc:
+        show_safe_error(exc, "nl2sql")
+
+question = st.text_area(
+    L("question"),
+    value=st.session_state.get("nl2sql_question", ""),
+    height=100,
+    placeholder=L("question_placeholder"),
+)
+st.session_state["nl2sql_question"] = question
+
+generate_col, clear_col = st.columns(2)
+with generate_col:
+    if st.button(L("generate_sql"), disabled=not question.strip()):
+        try:
+            st.session_state["nl2sql_sql"] = ollama.generate_sql(
+                question=question,
+                language=language,
+                schema=schema,
+                dialect=str(st.session_state.get("active_dialect") or "SQLite"),
+            )
+            st.success(L("sql_ready"))
+        except Exception as exc:
+            show_safe_error(exc, "nl2sql")
+with clear_col:
+    if st.button(L("clear")):
+        st.session_state["nl2sql_question"] = ""
+        st.session_state["nl2sql_sql"] = ""
+        st.session_state["nl2sql_df"] = None
+        st.rerun()
+
+sql_text = st.text_area(
+    L("sql_editable"),
+    value=st.session_state.get("nl2sql_sql", ""),
+    height=180,
+)
+st.session_state["nl2sql_sql"] = sql_text
+
+check_col, run_col = st.columns(2)
+with check_col:
+    if st.button(L("check_syntax"), disabled=not sql_text.strip()):
+        try:
+            validate_readonly_sql(sql_text)
+            executor.explain(ensure_limit(sql_text, int(st.session_state.get("nl2sql_limit") or 200)))
+            st.success(L("syntax_ok"))
+        except Exception as exc:
+            show_safe_error(exc, "nl2sql")
+with run_col:
+    if st.button(L("run"), disabled=not sql_text.strip()):
+        run_sql(
+            question=question,
+            sql_text=sql_text,
+            executor=executor,
+            history=history,
+            language=language,
+            model=ollama.settings.model,
+        )
+
+frame = st.session_state.get("nl2sql_df")
+executed = st.session_state.get("nl2sql_sql_executed")
+if executed:
+    st.caption(L("executed_sql"))
+    st.code(executed, language="sql")
+if isinstance(frame, pd.DataFrame):
+    st.subheader(L("results"))
+    elapsed = st.session_state.get("nl2sql_elapsed_ms")
+    if elapsed is not None:
+        st.caption(f"{L('elapsed')} : {elapsed} ms · {L('row_count', n=len(frame))}")
+    if not frame.empty:
+        st.caption(L("result_schema"))
+        st.write(", ".join(f"{col} ({frame[col].dtype})" for col in frame.columns))
+        filtered = render_profile_table(frame)
     else:
-        for it in items:
-            st.write(f"#{it.id} | {it.created_at} | {it.status} | rows={it.row_count}")
-            with st.expander("Voir / Recharger"):
-                st.write("Question:")
-                st.code(it.question)
-                st.write("SQL exécuté:")
-                st.code(it.executed_sql, language="sql")
-                if st.button(f"Recharger SQL (history #{it.id})"):
-                    st.session_state["nl2sql_sql"] = it.sql_text
+        filtered = frame
+        st.info(L("row_count", n=0))
+    render_exports(filtered if isinstance(filtered, pd.DataFrame) else frame)
 
-st.subheader("Vues sauvegardées")
-views = history.list_saved_views(limit=20)
+    st.subheader(L("save_view"))
+    title = st.text_input(L("view_name"))
+    description = st.text_input(L("view_description"))
+    if st.button(L("save_view")):
+        if not title.strip():
+            st.error(L("need_title"))
+        elif not sql_text.strip():
+            st.error(L("empty_sql"))
+        else:
+            history.save_view(
+                title=title.strip(),
+                question=question.strip(),
+                sql_text=sql_text.strip(),
+                description=description.strip() or None,
+                model=ollama.settings.model,
+                language=language,
+                database_url=mask_url(database_url),
+            )
+            st.success(L("saved"))
+
+st.subheader(L("history"))
+hist_search = st.text_input(L("search"), key="nl2sql_hist_search")
+hist_status = st.selectbox(L("status"), ["ALL", "success", "error"], key="nl2sql_hist_status")
+hist_page = int(st.number_input(L("page"), min_value=1, value=1, step=1, key="nl2sql_hist_page"))
+items = history.list_history(
+    limit=10,
+    offset=(hist_page - 1) * 10,
+    search_text=hist_search,
+    status=None if hist_status == "ALL" else hist_status,
+)
+if not items:
+    st.caption(L("no_history"))
+for item in items:
+    st.write(f"#{item.id} · {item.created_at} · {item.status} · {item.row_count} · {item.model} · {item.language}")
+    with st.expander(f"#{item.id}"):
+        st.code(item.question)
+        st.code(item.executed_sql, language="sql")
+        load_col, run_col, delete_col = st.columns(3)
+        with load_col:
+            if st.button(L("load"), key=f"history_load_{item.id}"):
+                st.session_state["nl2sql_sql"] = item.sql_text
+                st.session_state["nl2sql_question"] = item.question
+                st.rerun()
+        with run_col:
+            if st.button(L("load_run"), key=f"history_run_{item.id}"):
+                st.session_state["nl2sql_sql"] = item.sql_text
+                st.session_state["nl2sql_question"] = item.question
+                run_sql(
+                    question=item.question,
+                    sql_text=item.sql_text,
+                    executor=executor,
+                    history=history,
+                    language=language,
+                    model=ollama.settings.model,
+                )
+        with delete_col:
+            if st.button(L("delete"), key=f"history_delete_{item.id}"):
+                history.delete_history(item.id)
+                st.rerun()
+
+st.subheader(L("saved_views"))
+views_search = st.text_input(L("search"), key="nl2sql_views_search")
+views_page = int(st.number_input(L("page"), min_value=1, value=1, step=1, key="nl2sql_views_page"))
+views = history.list_saved_views(limit=10, offset=(views_page - 1) * 10, search_text=views_search)
 if not views:
-    st.caption("Aucune vue sauvegardée.")
-else:
-    for v in views:
-        st.write(f"#{v.id} | {v.created_at} | {v.title} | {v.model} | {v.language}")
-        with st.expander("Voir / Recharger"):
-            st.write("Question:")
-            st.code(v.question)
-            st.write("SQL:")
-            st.code(v.sql_text, language="sql")
-            if st.button(f"Recharger SQL (view #{v.id})"):
-                st.session_state["nl2sql_sql"] = v.sql_text
-                st.session_state["nl2sql_question"] = v.question
+    st.caption(L("no_views"))
+for view in views:
+    st.write(f"#{view.id} · {view.created_at} · {view.title} · {view.model} · {view.language}")
+    with st.expander(view.title):
+        if view.description:
+            st.write(view.description)
+        st.code(view.question)
+        st.code(view.sql_text, language="sql")
+        load_col, delete_col = st.columns(2)
+        with load_col:
+            if st.button(L("load"), key=f"view_load_{view.id}"):
+                st.session_state["nl2sql_sql"] = view.sql_text
+                st.session_state["nl2sql_question"] = view.question
+                st.rerun()
+        with delete_col:
+            if st.button(L("delete"), key=f"view_delete_{view.id}"):
+                history.delete_saved_view(view.id)
+                st.rerun()

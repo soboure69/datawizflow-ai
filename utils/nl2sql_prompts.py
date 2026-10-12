@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 
-def build_nl2sql_prompt(*, question: str, schema: str, language: str = "FR") -> str:
+def build_nl2sql_prompt(*, question: str, schema: str, language: str = "FR", dialect: str = "SQLite") -> str:
     lang = (language or "FR").upper()
     if lang not in {"FR", "EN"}:
         lang = "EN"
+    dialect_name = dialect or "SQLite"
 
     if lang == "FR":
         return f"""RÔLE:
-Tu es un expert SQL pour SQLite.
+Tu es un expert SQL pour {dialect_name}.
 
 OBJECTIF:
 Générer UNE SEULE requête SQL pour répondre à la question de l’utilisateur.
 
 CONTRAINTES STRICTES:
 - La requête DOIT être read-only.
+- Dialecte SQL : {dialect_name}.
 - Requête autorisée: uniquement SELECT (CTE WITH autorisée).
 - Interdit: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, ATTACH, DETACH, VACUUM, REINDEX, TRUNCATE.
 - N'invente jamais des tables ou des colonnes.
@@ -50,13 +52,14 @@ QUESTION UTILISATEUR:
 SQL:"""
     else:
         return f"""ROLE:
-You are an expert SQL engineer for SQLite.
+You are an expert SQL engineer for {dialect_name}.
 
 GOAL:
 Generate ONE SQL query that answers the user's question.
 
 STRICT CONSTRAINTS:
 - The query MUST be read-only.
+- SQL dialect: {dialect_name}.
 - Allowed: SELECT only (WITH CTE allowed).
 - Forbidden: INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, PRAGMA, ATTACH, DETACH, VACUUM, REINDEX, TRUNCATE.
 - Never invent tables or columns.

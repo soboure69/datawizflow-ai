@@ -4,3 +4,13 @@ app:
 
 database:
   url: ${DATABASE_URL}
+
+ollama:
+  url: ${OLLAMA_URL}
+  model: ${OLLAMA_MODEL}
+  temperature: 0.3
+  timeout: 60
+
+dataviz:
+  default_library: plotly
+  theme: light

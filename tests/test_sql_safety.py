@@ -23,8 +23,14 @@ def test_validate_readonly_sql_rejects_semicolon() -> None:
 
 def test_ensure_limit_adds_limit_when_missing() -> None:
     assert ensure_limit("SELECT 1", 200).endswith("LIMIT 200")
+    assert "FROM (SELECT 1)" in ensure_limit("SELECT 1", 200)
 
 
-def test_ensure_limit_does_not_duplicate_limit() -> None:
+def test_ensure_limit_caps_outer_query_with_existing_inner_limit() -> None:
     sql = "SELECT 1 LIMIT 5"
-    assert ensure_limit(sql, 200) == sql
+    assert ensure_limit(sql, 200).endswith("LIMIT 200")
+
+
+def test_validate_readonly_sql_rejects_dangerous_select_constructs() -> None:
+    with pytest.raises(ValueError):
+        validate_readonly_sql("SELECT load_extension('x')")

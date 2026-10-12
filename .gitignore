@@ -17,6 +17,8 @@ Thumbs.db
 
 # Env / secrets
 .env
+config/.fernet_key
+config/connections.yaml
 
 # Data / runtime
 db/

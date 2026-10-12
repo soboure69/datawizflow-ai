@@ -2665,3 +2665,62 @@ st.write(f"#{v.id} | {v.created_at} | {v.title} | {v.model} | {v.language}")
 Si tu veux, colle-moi ton bloc [add_history()](cci:1://file:///c:/Users/bello/Documents/datawizflow-ai/services/history_store.py:110:4-140:24) actuel aprÃ¨s modification et je te dis si lâ€™INSERT/tuple est bien alignÃ© (nombre de `?` = nombre de valeurs).
 
 ---
+
+# Journal de bord (à maintenir jusqu’à la fin)
+
+Objectif : garder une trace claire de ce qu’on fait et pourquoi, pour que tu puisses :
+- expliquer le projet à des techniciens (architecture, fichiers, choix techniques)
+- expliquer le projet à des non-techniciens (valeur, fonctionnalités, parcours utilisateur)
+
+## Format d’une entrée
+- **Date** :
+- **Objectif (non-tech)** :
+- **Objectif (tech)** :
+- **Actions (toi)** :
+- **Résultat attendu** :
+- **Fichiers touchés** :
+- **Apprentissages** :
+
+---
+
+## 2026-06-14 — Reprise du projet + relance Streamlit
+
+### Objectif (non-tech)
+Remettre l’application en route pour continuer les améliorations.
+
+### Objectif (tech)
+Résoudre le problème de commande `streamlit` non trouvée dans Git Bash, en lançant Streamlit via Python.
+
+### Actions (toi)
+1) Activer le venv :
+```bash
+./.venv/Scripts/activate
+```
+2) Lancer l’app (méthode robuste sous Git Bash) :
+```bash
+python -m streamlit run app.py
+```
+
+### Résultat
+L’app démarre correctement.
+
+### Apprentissages
+- Sous Windows, selon le terminal (Git Bash), la commande `streamlit` peut ne pas être dans le `PATH`.
+- `python -m streamlit ...` utilise l’interpréteur du venv et évite les soucis de `PATH`.
+
+---
+
+## En cours — Phase 2B (Hardening UX NL2SQL)
+
+### Feature 1 : “Rejouer depuis l’historique”
+But : depuis une entrée d’historique, pouvoir :
+- **Charger** : remettre question + SQL dans l’éditeur
+- **Charger + Exécuter** : rejouer la requête en 1 clic
+
+Fichier principal : `pages/2_NL2SQL.py`
+
+Étapes prévues :
+1) Extraire la logique d’exécution dans une fonction `run_sql(...)`
+2) Ajouter 2 boutons par item d’historique avec `key=` uniques
+3) Charger `nl2sql_question` + `nl2sql_sql` dans `st.session_state`
+4) (option) exécuter directement ou demander confirmation

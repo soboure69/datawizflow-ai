@@ -20,6 +20,12 @@ def _substitute_env_vars(value: str) -> str:
     return _ENV_PATTERN.sub(repl, value)
 
 
+def _or_env(value: Any, env_name: str, default: str) -> str:
+    if isinstance(value, str) and value and not value.startswith("${"):
+        return value
+    return os.environ.get(env_name, default)
+
+
 def _walk_and_substitute(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {k: _walk_and_substitute(v) for k, v in obj.items()}
@@ -42,6 +48,21 @@ class AppConfig:
             raise ValueError("Missing database.url in config")
         return url
 
+    def ollama_settings(self) -> dict[str, Any]:
+        raw = self.raw.get("ollama") or {}
+        return {
+            "url": _or_env(raw.get("url"), "OLLAMA_URL", "http://localhost:11434"),
+            "model": _or_env(raw.get("model"), "OLLAMA_MODEL", "mistral"),
+            "temperature": float(raw.get("temperature", os.environ.get("OLLAMA_TEMPERATURE", 0.3))),
+            "timeout": float(raw.get("timeout", os.environ.get("OLLAMA_TIMEOUT", 60))),
+        }
+
+    def dataviz_settings(self) -> dict[str, str]:
+        raw = self.raw.get("dataviz") or {}
+        library = str(raw.get("default_library") or "plotly")
+        theme = str(raw.get("theme") or "light")
+        return {"default_library": library, "theme": theme}
+
 
 class ConfigManager:
     def __init__(self, config_path: str = "config/config.yaml") -> None:
@@ -54,3 +75,14 @@ class ConfigManager:
         data = yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
         data = _walk_and_substitute(data)
         return AppConfig(raw=data)
+
+    def load_raw(self) -> dict[str, Any]:
+        if not self._path.exists():
+            raise FileNotFoundError(f"Config file not found: {self._path}")
+        return yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
+
+    def save_raw(self, data: dict[str, Any]) -> None:
+        self._path.write_text(
+            yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+            encoding="utf-8",
+        )

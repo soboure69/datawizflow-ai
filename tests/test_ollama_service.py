@@ -6,7 +6,7 @@ class _FakeClient:
     def __init__(self, *, base_url: str):
         self.base_url = base_url
 
-    def chat(self, *, model: str, messages):
+    def chat(self, *, model: str, messages, **kwargs):
         return {"message": {"content": "```sql\nSELECT 1 AS ok\n```"}}
 
 
