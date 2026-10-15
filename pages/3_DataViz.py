@@ -57,18 +57,25 @@ if mode == "upload":
     uploaded = st.file_uploader(L("upload_title"), type=["csv", "xlsx", "xls", "parquet", "json"])
     if uploaded is not None:
         from services.dataset_store import materialize_dataframe
-        from services.file_loader import FileLoader, MAX_UPLOAD_BYTES
+        from services.file_loader import FileLoader, MAX_UPLOAD_BYTES, truncation_messages
 
         file_id = str(getattr(uploaded, "file_id", uploaded.name))
         if st.session_state.get("viz_upload_id") != file_id:
             if int(getattr(uploaded, "size", 0)) > MAX_UPLOAD_BYTES:
                 st.error("Fichier trop volumineux (maximum 25 Mo).")
                 st.stop()
-            frame = FileLoader().load_bytes(uploaded.getvalue(), uploaded.name)
+            try:
+                frame = FileLoader().load_bytes(uploaded.getvalue(), uploaded.name)
+            except ValueError as exc:
+                st.error(str(exc))
+                st.stop()
             url, table = materialize_dataframe(frame, uploaded.name)
             remember_dataset(uploaded.name, url, table, frame)
             st.session_state["viz_upload_df"] = frame
             st.session_state["viz_upload_id"] = file_id
+            st.session_state["viz_upload_notes"] = truncation_messages(frame)
+        for key, kwargs in st.session_state.get("viz_upload_notes") or []:
+            st.warning(L(key, **kwargs))
 elif mode == "session":
     datasets = st.session_state.get("datasets") or []
     if not datasets:

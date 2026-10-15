@@ -4,7 +4,7 @@ import streamlit as st
 from services.config_manager import ConfigManager
 from services.connection_store import ConnectionStore, mask_url
 from services.dataset_store import materialize_dataframe
-from services.file_loader import FileLoader, MAX_UPLOAD_BYTES, profile_dataframe
+from services.file_loader import FileLoader, MAX_UPLOAD_BYTES, profile_dataframe, truncation_messages
 from services.sql_executor import SQLExecutor
 from utils.sql_safety import ensure_limit, validate_readonly_sql
 from utils.ui import L, init_app, remember_dataset, show_safe_error, sidebar_language
@@ -156,6 +156,8 @@ if uploads:
         if frame is None:
             continue
         info = profile_dataframe(frame, filename=uploaded.name, size_bytes=int(frame.memory_usage(deep=True).sum()))
+        for key, kwargs in truncation_messages(frame):
+            st.warning(L(key, **kwargs))
         st.markdown(
             f"**{uploaded.name}** · {L('rows')} {info['rows']} · {L('columns')} {len(info['columns'])}"
         )

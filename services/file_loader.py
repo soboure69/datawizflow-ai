@@ -32,9 +32,31 @@ class FileLoader:
         if len(data) > MAX_UPLOAD_BYTES:
             raise ValueError("Fichier trop volumineux (maximum 25 Mo).")
         frame = self.load(io.BytesIO(data), filename=filename)
-        if len(frame) > MAX_UPLOAD_ROWS or len(frame.columns) > MAX_UPLOAD_COLUMNS:
-            raise ValueError("Jeu de données trop volumineux (200 000 lignes ou 200 colonnes maximum).")
+        truncation: dict[str, tuple[int, int]] = {}
+        row_count = len(frame)
+        column_count = len(frame.columns)
+        if row_count > MAX_UPLOAD_ROWS:
+            frame = frame.iloc[:MAX_UPLOAD_ROWS].copy()
+            truncation["rows"] = (row_count, MAX_UPLOAD_ROWS)
+        if column_count > MAX_UPLOAD_COLUMNS:
+            frame = frame.iloc[:, :MAX_UPLOAD_COLUMNS].copy()
+            truncation["columns"] = (column_count, MAX_UPLOAD_COLUMNS)
+        if truncation:
+            frame.attrs["truncation"] = truncation
         return frame
+
+
+def truncation_messages(frame: pd.DataFrame) -> list[tuple[str, dict[str, int]]]:
+    """Clés i18n décrivant un extrait, si le fichier dépassait les plafonds."""
+    info = frame.attrs.get("truncation") or {}
+    messages: list[tuple[str, dict[str, int]]] = []
+    if "rows" in info:
+        total, kept = info["rows"]
+        messages.append(("upload_truncated_rows", {"total": int(total), "kept": int(kept)}))
+    if "columns" in info:
+        total, kept = info["columns"]
+        messages.append(("upload_truncated_columns", {"total": int(total), "kept": int(kept)}))
+    return messages
 
 
 def profile_dataframe(df: pd.DataFrame, *, filename: str = "", size_bytes: int = 0) -> dict[str, Any]:

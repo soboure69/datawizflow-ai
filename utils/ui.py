@@ -9,7 +9,12 @@ from dotenv import load_dotenv
 from services.config_manager import ConfigManager
 from services.connection_store import ConnectionStore, mask_url
 from services.ollama_service import OllamaService
-from utils.formatters import dataframe_to_csv_bytes, dataframe_to_excel_bytes, dataframe_to_parquet_bytes
+from utils.formatters import (
+    dataframe_to_csv_bytes,
+    dataframe_to_excel_bytes,
+    dataframe_to_parquet_bytes,
+    dataframe_to_pdf_bytes,
+)
 from utils.i18n import translate
 from utils.logger import get_logger
 from utils.auth import require_authentication
@@ -144,13 +149,19 @@ def render_profile_table(df: pd.DataFrame) -> pd.DataFrame:
     return view
 
 
-def render_exports(df: pd.DataFrame, stem: str = "resultat") -> None:
+def render_exports(df: pd.DataFrame, stem: str = "resultat", question: str = "", sql_text: str = "") -> None:
     st.download_button(L("export_csv"), data=dataframe_to_csv_bytes(df), file_name=f"{stem}.csv", mime="text/csv")
     st.download_button(
         L("export_excel"),
         data=dataframe_to_excel_bytes(df),
         file_name=f"{stem}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    st.download_button(
+        L("export_pdf"),
+        data=dataframe_to_pdf_bytes(df, question=question, sql_text=sql_text, language=str(st.session_state.get("language") or "FR")),
+        file_name=f"{stem}.pdf",
+        mime="application/pdf",
     )
     try:
         parquet = dataframe_to_parquet_bytes(df)

@@ -6,6 +6,7 @@ import streamlit as st
 from services.history_store import HistoryStore
 from services.connection_store import mask_url
 from services.speech_to_text import WhisperService
+from services.text_to_speech import summarize_dataframe, synthesize_speech
 from services.sql_executor import SQLExecutor
 from utils.logger import get_logger
 from utils.sql_safety import ensure_limit, validate_readonly_sql
@@ -226,7 +227,21 @@ if isinstance(frame, pd.DataFrame):
     else:
         filtered = frame
         st.info(L("row_count", n=0))
-    render_exports(filtered if isinstance(filtered, pd.DataFrame) else frame)
+    shown = filtered if isinstance(filtered, pd.DataFrame) else frame
+    render_exports(shown, question=question, sql_text=str(executed or ""))
+    if st.button(L("read_aloud")):
+        try:
+            spoken = summarize_dataframe(shown, language)
+            with st.spinner(L("read_aloud_wait")):
+                st.session_state["nl2sql_speech"] = synthesize_speech(spoken, language)
+            st.session_state["nl2sql_speech_text"] = spoken
+        except (ValueError, RuntimeError) as exc:
+            st.error(str(exc))
+        except Exception as exc:
+            show_safe_error(exc, "nl2sql")
+    if st.session_state.get("nl2sql_speech"):
+        st.caption(str(st.session_state.get("nl2sql_speech_text") or ""))
+        st.audio(st.session_state["nl2sql_speech"], format="audio/wav")
 
     st.subheader(L("save_view"))
     title = st.text_input(L("view_name"))

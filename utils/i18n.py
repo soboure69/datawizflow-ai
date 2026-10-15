@@ -52,6 +52,14 @@ STRINGS: dict[str, dict[str, str]] = {
         "EN": "Leave empty to keep the stored password.",
     },
     "upload_title": {"FR": "Fichiers tabulaires", "EN": "Tabular files"},
+    "upload_truncated_rows": {
+        "FR": "Le fichier contient {total} lignes. Seules les {kept} premières sont chargées.",
+        "EN": "The file has {total} rows. Only the first {kept} are loaded.",
+    },
+    "upload_truncated_columns": {
+        "FR": "Le fichier contient {total} colonnes. Seules les {kept} premières sont chargées.",
+        "EN": "The file has {total} columns. Only the first {kept} are loaded.",
+    },
     "upload_help": {
         "FR": "CSV, Excel, Parquet ou JSON. Plusieurs fichiers possibles. Ils deviennent une source SQL locale.",
         "EN": "CSV, Excel, Parquet, or JSON. Several files at once. Each becomes a local SQL source.",
@@ -82,6 +90,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "syntax_ok": {"FR": "Syntaxe acceptée par la base.", "EN": "The database accepted this syntax."},
     "results": {"FR": "Résultats", "EN": "Results"},
     "export_csv": {"FR": "Télécharger CSV", "EN": "Download CSV"},
+    "export_pdf": {"FR": "Télécharger le rapport PDF", "EN": "Download the PDF report"},
     "export_excel": {"FR": "Télécharger Excel", "EN": "Download Excel"},
     "export_parquet": {"FR": "Télécharger Parquet", "EN": "Download Parquet"},
     "save_view": {"FR": "Sauvegarder cette requête", "EN": "Save this query"},
@@ -112,6 +121,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "FR": "Transcription en cours. Le premier appel télécharge le modèle Whisper.",
         "EN": "Transcribing. The first call downloads the Whisper model.",
     },
+    "read_aloud": {"FR": "Lire le résultat", "EN": "Read the result"},
+    "read_aloud_wait": {"FR": "Préparation de la lecture.", "EN": "Preparing speech."},
     "source": {"FR": "Source", "EN": "Source"},
     "need_title": {"FR": "Donnez un nom à la vue.", "EN": "Give the view a name."},
     "empty_sql": {"FR": "Le SQL est vide.", "EN": "SQL is empty."},

@@ -24,7 +24,7 @@ Ouvrez **NL2SQL**.
 3. **Générer le SQL**. Le texte est éditable.
 4. **Vérifier la syntaxe** interroge la base sans afficher les lignes. **Valider et exécuter** lance la requête.
 5. Filtrez, triez et changez de page dans le tableau. Le temps d'exécution et les types de colonnes sont affichés.
-6. Téléchargez en CSV, Excel ou Parquet.
+6. Téléchargez en CSV, Excel, Parquet, ou en rapport PDF (question, SQL et extrait du tableau). **Lire le résultat** énonce le nombre de lignes, les colonnes et la première ligne.
 7. Donnez un nom et une description, puis sauvegardez la vue.
 
 L'historique reste visible même sans résultat à l'écran. **Charger** remet la question et le SQL. **Charger et exécuter** relance la requête.

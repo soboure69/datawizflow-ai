@@ -76,4 +76,8 @@ docker compose --profile with-ollama up --build
 
 ## Ce qui reste optionnel
 
-Le cahier des charges marque comme bonus la lecture vocale des résultats, les alertes, l'export PDF de rapport et l'intégration Git. Ces éléments ne font pas partie de cette version.
+**Lire le résultat**, sur NL2SQL, énonce un résumé du tableau avec les voix Windows (français ou anglais, selon la langue de l'interface).
+
+Le rapport PDF d'une requête NL2SQL contient la question, le SQL exécuté et les premières lignes du tableau filtré.
+
+Le cahier des charges marque encore comme bonus les alertes et l'intégration Git.
